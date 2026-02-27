@@ -4,14 +4,14 @@ import os
 from datetime import datetime, timezone, date
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     create_engine, MetaData, Table, Column,
     String, Boolean, BigInteger, Integer,
-    select, insert, update, delete, and_
+    select, insert, update, delete, and_, case
 )
 from sqlalchemy.engine import Engine
 
@@ -41,7 +41,7 @@ metadata = MetaData()
 lists = Table(
     "lists",
     metadata,
-    Column("id", String, primary_key=True),          # e.g., inbox/work/personal/custom
+    Column("id", String, primary_key=True),
     Column("title", String, nullable=False),
     Column("emoji", String, nullable=False, server_default="📌"),
     Column("sort_order", Integer, nullable=False, server_default="0"),
@@ -58,7 +58,7 @@ tasks = Table(
     Column("updated_at", BigInteger, nullable=False),
     Column("completed_at", BigInteger, nullable=True),
     Column("list_id", String, nullable=False),
-    Column("due_date", String, nullable=True),       # YYYY-MM-DD
+    Column("due_date", String, nullable=True),  # YYYY-MM-DD
 )
 
 def now_ts() -> int:
@@ -101,7 +101,7 @@ seed_default_lists()
 # -----------------------------
 # FastAPI
 # -----------------------------
-app = FastAPI(title="TickTick-like ToDo (UI v2)")
+app = FastAPI(title="TickTick-like ToDo (UI v3)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,6 +112,7 @@ app.add_middleware(
 )
 
 Filter = Literal["all", "active", "completed"]
+Sort = Literal["due", "created"]
 
 # -----------------------------
 # Schemas
@@ -119,11 +120,6 @@ Filter = Literal["all", "active", "completed"]
 class ListCreate(BaseModel):
     title: str = Field(min_length=1, max_length=60)
     emoji: str = Field(default="📌", min_length=1, max_length=4)
-
-class ListUpdate(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1, max_length=60)
-    emoji: Optional[str] = Field(default=None, min_length=1, max_length=4)
-    sortOrder: Optional[int] = None
 
 class ListOut(BaseModel):
     id: str
@@ -178,7 +174,6 @@ def validate_due(due: Optional[str]) -> Optional[str]:
     due = due.strip()
     if due == "":
         return None
-    # basic format check YYYY-MM-DD
     try:
         datetime.strptime(due, "%Y-%m-%d")
     except ValueError:
@@ -229,52 +224,11 @@ def create_list(payload: ListCreate):
 
     return to_list_out(row)
 
-@app.patch("/api/lists/{list_id}", response_model=ListOut)
-def update_list(list_id: str, payload: ListUpdate):
-    # prevent editing core ids? allow title/emoji
-    values = {}
-    if payload.title is not None:
-        t = payload.title.strip()
-        if not t:
-            raise HTTPException(status_code=400, detail="Title is empty")
-        values["title"] = t
-    if payload.emoji is not None:
-        e = payload.emoji.strip()
-        if not e:
-            raise HTTPException(status_code=400, detail="Emoji is empty")
-        values["emoji"] = e
-    if payload.sortOrder is not None:
-        values["sort_order"] = int(payload.sortOrder)
-
-    if not values:
-        raise HTTPException(status_code=400, detail="Nothing to update")
-
-    stmt = update(lists).where(lists.c.id == list_id).values(**values)
-    with engine.begin() as conn:
-        res = conn.execute(stmt)
-        if res.rowcount == 0:
-            raise HTTPException(status_code=404, detail="List not found")
-        row = conn.execute(select(lists).where(lists.c.id == list_id)).mappings().first()
-    return to_list_out(row)
-
-@app.delete("/api/lists/{list_id}")
-def delete_list(list_id: str):
-    if list_id == "inbox":
-        raise HTTPException(status_code=400, detail="Cannot delete inbox")
-    # move tasks to inbox, then delete list
-    with engine.begin() as conn:
-        conn.execute(
-            update(tasks).where(tasks.c.list_id == list_id).values(list_id="inbox")
-        )
-        res = conn.execute(delete(lists).where(lists.c.id == list_id))
-        if res.rowcount == 0:
-            raise HTTPException(status_code=404, detail="List not found")
-    return {"deleted": True}
-
 # ---- Tasks ----
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks(
     filter: Filter = "all",
+    sort: Sort = "due",
     list_id: Optional[str] = None,
     due: Optional[str] = None,
     q: Optional[str] = None,
@@ -293,16 +247,18 @@ def list_tasks(
         conds.append(tasks.c.due_date == due)
 
     if q:
-        # works in Postgres and SQLite
         conds.append(tasks.c.title.ilike(f"%{q.strip()}%"))
 
     stmt = select(tasks)
     if conds:
         stmt = stmt.where(and_(*conds))
 
-    # order: due_date first (NULLS last), then created desc
-    # SQLAlchemy/SQLite NULLS LAST is tricky; keep simple:
-    stmt = stmt.order_by(tasks.c.due_date.asc().nulls_last(), tasks.c.created_at.desc())
+    if sort == "created":
+        stmt = stmt.order_by(tasks.c.created_at.desc())
+    else:
+        # Cross-dialect "NULLS LAST": CASE when due_date is NULL then 1 else 0
+        nulls_last_key = case((tasks.c.due_date.is_(None), 1), else_=0)
+        stmt = stmt.order_by(nulls_last_key.asc(), tasks.c.due_date.asc(), tasks.c.created_at.desc())
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
@@ -365,7 +321,6 @@ def update_task(task_id: str, payload: TaskUpdate):
         values["list_id"] = lid
 
     if payload.dueDate is not None:
-        # may be null to clear
         values["due_date"] = validate_due(payload.dueDate)
 
     if not values:
@@ -386,17 +341,6 @@ def delete_task(task_id: str):
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Task not found")
     return {"deleted": True}
-
-@app.get("/api/export")
-def export_all():
-    with engine.connect() as conn:
-        trows = conn.execute(select(tasks).order_by(tasks.c.created_at.desc())).mappings().all()
-        lrows = conn.execute(select(lists).order_by(lists.c.sort_order.asc())).mappings().all()
-    return {
-        "version": 2,
-        "lists": [to_list_out(r).model_dump() for r in lrows],
-        "tasks": [to_task_out(r).model_dump() for r in trows],
-    }
 
 # -----------------------------
 # Serve frontend (single service)

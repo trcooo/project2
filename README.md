@@ -1,11 +1,17 @@
-# TickTick-like ToDo (UI v2) — One-click Railway + PostgreSQL
+# TickTick-like ToDo (UI v3) — Railway one-click + PostgreSQL
+
+## Исправления / улучшения
+- Исправлен `Internal Server Error` на SQLite (убран `NULLS LAST`).
+- Добавлена сортировка на бэке: `sort=due|created`.
+- Свайпы по задаче (моб): вправо = выполнить, влево = удалить.
+- Быстрый ввод как в TickTick: нижняя строка ввода + иконки.
+- Переключатель сортировки (кнопка "несгруппирован…").
+- Адаптив под устройство: mobile/tablet/desktop (на десктопе боковое меню закреплено).
 
 ## Быстрый деплой на Railway
-1) Залей репо на GitHub
+1) GitHub: залей репо
 2) Railway → New Project → Deploy from GitHub → выбери репо → Deploy
-3) Railway → Add → PostgreSQL (появится `DATABASE_URL`) → приложение само начнёт использовать Postgres
-
-> Важно: НЕ добавляй Dockerfile и не подключай Vite — фронт статический и отдаётся FastAPI.
+3) Railway → Add → PostgreSQL (появится `DATABASE_URL`) → готово
 
 ## Локальный запуск
 ```bash
@@ -19,24 +25,3 @@ uvicorn main:app --reload --port 8000
 ```
 
 Открой: http://127.0.0.1:8000/
-
-## Что есть (похоже на TickTick)
-- боковое меню (списки + счётчики)
-- умный список "Сегодня"
-- карточки задач + чекбокс выполнено
-- даты: Сегодня / Завтра / дата
-- группы (Сегодня/Завтра/Позже/Без даты) + сворачивание
-- "Выполнено" отдельной секцией
-- календарь (вкладка) + задачи выбранного дня
-- глобальный поиск (вкладка)
-
-## API
-- GET    /api/lists
-- POST   /api/lists
-- PATCH  /api/lists/{id}
-- DELETE /api/lists/{id}
-
-- GET    /api/tasks?filter=all|active|completed&list_id=...&due=YYYY-MM-DD&q=...
-- POST   /api/tasks
-- PATCH  /api/tasks/{id}
-- DELETE /api/tasks/{id}
