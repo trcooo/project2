@@ -4,212 +4,133 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Планировщик задач</title>
+  <meta name="theme-color" content="#0b1220" />
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="layout">
-    <!-- Drawer -->
-    <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
-    <aside class="drawer" id="drawer" aria-label="Меню" hidden>
-      <div class="drawer-top">
-        <div class="user">
-          <div class="avatar">👤</div>
-          <div class="user-meta">
-            <div class="user-name">Мой аккаунт</div>
-            <div class="user-mail">demo@local</div>
-          </div>
-          <div class="user-actions">
-            <button class="drawer-icon" title="Уведомления">🔔</button>
-            <button class="drawer-icon" title="Настройки">⚙️</button>
-          </div>
+<div class="layout">
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="drawer" id="drawer" hidden>
+    <div class="drawer-top">
+      <div class="user">
+        <div class="avatar">👤</div>
+        <div class="user-meta">
+          <div class="user-name">Мой аккаунт</div>
+          <div class="user-mail">demo@local</div>
         </div>
-
-        <nav class="drawer-nav" id="drawerNav">
-          <button class="drawer-item active" data-kind="smart" data-id="today">
-            <span class="di-emoji">📅</span>
-            <span class="di-title">Сегодня</span>
-            <span class="di-count" id="countToday">—</span>
-          </button>
-
-          <div class="drawer-sep"></div>
-          <div id="listsContainer"></div>
-        </nav>
-      </div>
-
-      <div class="drawer-bottom">
-        <button class="drawer-add" id="btnAddList">＋ Добавить</button>
-        <button class="drawer-icon big" id="btnDrawerSettings" title="Настройки">☰</button>
-      </div>
-    </aside>
-
-    <div class="main">
-      <header class="topbar">
-        <button class="icon-btn" id="btnMenu" aria-label="Меню">☰</button>
-        <div class="title">
-          <div class="title-main" id="pageTitle">Входящие</div>
-          <div class="title-sub" id="pageSub"></div>
+        <div class="user-actions">
+          <button class="drawer-icon" id="btnTheme">🌓</button>
         </div>
-        <button class="icon-btn" id="btnMore" aria-label="Ещё">⋯</button>
-      </header>
-
-      <main class="container">
-        <!-- Tasks view -->
-        <section id="viewTasks" class="view view-active">
-          <div class="pill-row">
-            <button class="pill" id="btnSort">несгруппирован…</button>
-            <button class="pill plus" id="btnQuickAdd">＋</button>
-          </div>
-
-          <div class="search">
-            <span class="search-ico">⌕</span>
-            <input id="searchInput" type="text" placeholder="Поиск" />
-          </div>
-
-          <div id="groups"></div>
-
-          <div class="completed">
-            <button class="section-head muted" id="completedHead">
-              <span>Выполнено</span>
-              <span class="section-right"><span id="completedCount">0</span> <span id="completedChevron">▾</span></span>
-            </button>
-            <ul class="tasks" id="completedTasks"></ul>
-          </div>
-
-          <div class="empty" id="emptyState" hidden>Задач нет</div>
-        </section>
-
-        <!-- Calendar view -->
-        <section id="viewCalendar" class="view">
-          <div class="calendar-head">
-            <button class="icon-btn small" id="calPrev" aria-label="Назад">‹</button>
-            <div class="cal-title" id="calTitle">—</div>
-            <div class="cal-actions">
-              <button class="icon-btn small" id="calToday" aria-label="Сегодня">●</button>
-              <button class="icon-btn small" id="calNext" aria-label="Вперёд">›</button>
-            </div>
-          </div>
-
-          <div class="calendar-week">
-            <span>В</span><span>П</span><span>В</span><span>С</span><span>Ч</span><span>П</span><span>С</span>
-          </div>
-
-          <div class="calendar-grid" id="calendarGrid"></div>
-
-          <div class="cal-sheet">
-            <div class="cal-sheet-title" id="calSheetTitle">СЕГОДНЯ</div>
-            <ul class="tasks flat" id="calTasks"></ul>
-            <div class="empty" id="calEmpty" hidden>На этот день задач нет</div>
-          </div>
-        </section>
-
-        <!-- Search view -->
-        <section id="viewSearch" class="view">
-          <div class="search big">
-            <span class="search-ico">⌕</span>
-            <input id="globalSearchInput" type="text" placeholder="Поиск по всем задачам" />
-          </div>
-          <ul class="tasks" id="searchResults"></ul>
-          <div class="empty" id="searchEmpty" hidden>Ничего не найдено</div>
-        </section>
-
-        <!-- Focus view -->
-        <section id="viewFocus" class="view">
-          <div class="focus-card">
-            <div class="focus-title">Фокус</div>
-            <div class="focus-text">Дальше добавим таймер/помодоро, фокус-задачу и статистику.</div>
-          </div>
-        </section>
-      </main>
-
-      <!-- Quick composer (TickTick-like) -->
-      <div class="composer" id="composer">
-        <button class="comp-btn" id="compListBtn" title="Список">🏷️</button>
-        <input class="comp-input" id="compInput" placeholder="Добавить задачу…" />
-        <button class="comp-btn" id="compDueBtn" title="Дата">🗓️</button>
-        <button class="comp-btn primary" id="compAddBtn" title="Добавить">➤</button>
-        <input type="date" id="compDueDate" class="comp-date" />
       </div>
-
-      <!-- Floating add button -->
-      <button class="fab" id="fabAdd" aria-label="Добавить задачу">+</button>
-
-      <!-- Bottom navigation -->
-      <nav class="bottom-nav" aria-label="Навигация">
-        <button class="bn-item active" data-view="tasks" title="Задачи">☑️</button>
-        <button class="bn-item" data-view="calendar" title="Календарь">🗓️</button>
-        <button class="bn-item" data-view="search" title="Поиск">🔎</button>
-        <button class="bn-item" data-view="focus" title="Фокус">⬣</button>
+      <nav class="drawer-nav">
+        <button class="drawer-item active" data-kind="smart" data-id="all"><span class="di-emoji">🗂️</span><span class="di-title">Все</span><span class="di-count" id="countAll">—</span></button>
+        <button class="drawer-item" data-kind="smart" data-id="today"><span class="di-emoji">📅</span><span class="di-title">Сегодня</span><span class="di-count" id="countToday">—</span></button>
+        <button class="drawer-item" data-kind="smart" data-id="next7"><span class="di-emoji">⏳</span><span class="di-title">Следующие 7</span><span class="di-count" id="countNext7">—</span></button>
+        <div class="drawer-sep"></div>
+        <div class="drawer-section-title">Списки</div>
+        <div id="listsContainer"></div>
       </nav>
-
-      <!-- Sort sheet -->
-      <div class="sheet-backdrop" id="sortBackdrop" hidden></div>
-      <div class="sheet" id="sortSheet" hidden>
-        <div class="sheet-title">Сортировка</div>
-        <button class="sheet-option" data-sort="due">По дате (как TickTick)</button>
-        <button class="sheet-option" data-sort="created">По созданию</button>
-        <button class="sheet-option ghost" id="sortCancel">Закрыть</button>
-      </div>
-
-      <!-- Bottom sheet (edit task) -->
-      <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
-      <div class="sheet" id="sheet" hidden>
-        <form id="taskForm" class="sheet-form">
-          <div class="sheet-title">Редактирование</div>
-          <input id="taskTitle" type="text" placeholder="Название…" autocomplete="off" />
-
-          <div class="sheet-tools">
-            <button type="button" class="tool" id="toolToday">Сегодня</button>
-            <button type="button" class="tool" id="toolTomorrow">Завтра</button>
-            <label class="tool tool-date">
-              Дата
-              <input type="date" id="toolDate" />
-            </label>
-            <button type="button" class="tool ghost" id="toolClearDue" title="Убрать дату">×</button>
-          </div>
-
-          <div class="sheet-row">
-            <label class="sheet-label">Список</label>
-            <select id="listSelect" class="sheet-select"></select>
-          </div>
-
-          <div class="sheet-actions">
-            <button type="button" class="btn ghost" id="btnCancel">Отмена</button>
-            <button type="submit" class="btn primary" id="btnSave">Сохранить</button>
-          </div>
-
-          <div class="hint" id="hint" hidden>Введите текст задачи</div>
-        </form>
-      </div>
-
-      <!-- Bottom sheet (add list) -->
-      <div class="sheet-backdrop" id="listBackdrop" hidden></div>
-      <div class="sheet" id="listSheet" hidden>
-        <form id="listForm" class="sheet-form">
-          <div class="sheet-title">Новый список</div>
-          <div class="sheet-row">
-            <label class="sheet-label">Эмодзи</label>
-            <input id="listEmoji" class="sheet-emoji" value="📌" maxlength="4"/>
-          </div>
-          <input id="listTitle" type="text" placeholder="Название списка…" autocomplete="off" />
-          <div class="sheet-actions">
-            <button type="button" class="btn ghost" id="btnListCancel">Отмена</button>
-            <button type="submit" class="btn primary">Создать</button>
-          </div>
-          <div class="hint" id="listHint" hidden>Введите название</div>
-        </form>
-      </div>
-
-      <!-- List picker sheet (for composer) -->
-      <div class="sheet-backdrop" id="pickBackdrop" hidden></div>
-      <div class="sheet" id="pickSheet" hidden>
-        <div class="sheet-title">Выберите список</div>
-        <div class="pick-list" id="pickList"></div>
-        <button class="sheet-option ghost" id="pickCancel">Закрыть</button>
-      </div>
-
     </div>
-  </div>
+    <div class="drawer-bottom">
+      <button class="drawer-add" id="btnAdd">＋ Добавить</button>
+    </div>
+  </aside>
 
-  <script src="./app.js"></script>
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="btnMenu">☰</button>
+      <div class="title"><div class="title-main" id="pageTitle">Все</div><div class="title-sub" id="pageSub"></div></div>
+      <button class="icon-btn" id="btnSort">⇅</button>
+    </header>
+
+    <main class="container">
+      <section id="viewTasks" class="view view-active">
+        <div class="search"><span class="search-ico">⌕</span><input id="searchInput" placeholder="Поиск"></div>
+        <div id="groups"></div>
+        <button class="section-head muted" id="completedHead">Выполнено <span id="completedCount">0</span> <span id="completedChevron">▾</span></button>
+        <ul class="tasks" id="completedTasks"></ul>
+        <div class="empty" id="emptyState" hidden>Задач нет</div>
+      </section>
+
+      <section id="viewSearch" class="view">
+        <div class="search big"><span class="search-ico">⌕</span><input id="globalSearchInput" placeholder="Поиск по всем задачам"></div>
+        <ul class="tasks" id="searchResults"></ul>
+        <div class="empty" id="searchEmpty" hidden>Ничего не найдено</div>
+      </section>
+    </main>
+
+    <div class="composer">
+      <button class="comp-btn" id="compListBtn">🏷️</button>
+      <button class="comp-btn" id="compFlagBtn">⚑</button>
+      <input class="comp-input" id="compInput" placeholder="Добавить задачу… (#tag !1..3)">
+      <button class="comp-btn" id="compDueBtn">🗓️</button>
+      <button class="comp-btn primary" id="compAddBtn">➤</button>
+      <input type="date" id="compDueDate" class="comp-date" />
+    </div>
+
+    <nav class="bottom-nav">
+      <button class="bn-item active" data-view="tasks">☑️</button>
+      <button class="bn-item" data-view="search">🔎</button>
+    </nav>
+
+    <!-- sort sheet -->
+    <div class="sheet-backdrop" id="sortBackdrop" hidden></div>
+    <div class="sheet" id="sortSheet" hidden>
+      <div class="sheet-title">Сортировка</div>
+      <button class="sheet-option" data-sort="due">По дате</button>
+      <button class="sheet-option" data-sort="created">По созданию</button>
+      <button class="sheet-option" data-sort="manual">Ручная (drag&drop)</button>
+      <button class="sheet-option ghost" id="sortCancel">Закрыть</button>
+    </div>
+
+    <!-- add sheet -->
+    <div class="sheet-backdrop" id="addBackdrop" hidden></div>
+    <div class="sheet" id="addSheet" hidden>
+      <div class="sheet-title">Добавить</div>
+      <button class="sheet-option" id="addListBtn">Список</button>
+      <button class="sheet-option" id="addFolderBtn">Папку</button>
+      <button class="sheet-option ghost" id="addCancel">Закрыть</button>
+    </div>
+
+    <!-- create list sheet -->
+    <div class="sheet-backdrop" id="listBackdrop" hidden></div>
+    <div class="sheet" id="listSheet" hidden>
+      <form id="listForm" class="sheet-form">
+        <div class="sheet-title">Новый список</div>
+        <div class="sheet-row"><label class="sheet-label">Эмодзи</label><input id="listEmoji" class="sheet-emoji" value="📌" maxlength="4"></div>
+        <div class="sheet-row"><label class="sheet-label">Папка</label><select id="folderSelect" class="sheet-select"><option value="">Без папки</option></select></div>
+        <input id="listTitle" type="text" placeholder="Название списка…">
+        <div class="sheet-actions"><button type="button" class="btn ghost" id="btnListCancel">Отмена</button><button class="btn primary" type="submit">Создать</button></div>
+        <div class="hint" id="listHint" hidden>Введите название</div>
+      </form>
+    </div>
+
+    <!-- create folder sheet -->
+    <div class="sheet-backdrop" id="folderBackdrop" hidden></div>
+    <div class="sheet" id="folderSheet" hidden>
+      <form id="folderForm" class="sheet-form">
+        <div class="sheet-title">Новая папка</div>
+        <div class="sheet-row"><label class="sheet-label">Эмодзи</label><input id="folderEmoji" class="sheet-emoji" value="📁" maxlength="4"></div>
+        <input id="folderTitle" type="text" placeholder="Название папки…">
+        <div class="sheet-actions"><button type="button" class="btn ghost" id="btnFolderCancel">Отмена</button><button class="btn primary" type="submit">Создать</button></div>
+        <div class="hint" id="folderHint" hidden>Введите название</div>
+      </form>
+    </div>
+
+    <!-- pick list sheet -->
+    <div class="sheet-backdrop" id="pickBackdrop" hidden></div>
+    <div class="sheet" id="pickSheet" hidden>
+      <div class="sheet-title">Список</div>
+      <div class="pick-list" id="pickList"></div>
+      <button class="sheet-option ghost" id="pickCancel">Закрыть</button>
+    </div>
+
+  </div>
+</div>
+
+<script src="./app.js"></script>
 </body>
 </html>

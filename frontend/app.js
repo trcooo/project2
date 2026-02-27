@@ -1,891 +1,295 @@
-// TickTick-like UI v3 (no frameworks)
+const SETTINGS_KEY="tt.settings.v4";
+const settings=(()=>{try{return{sort:"due",theme:"auto",...(JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}"))}}catch{return{sort:"due",theme:"auto"}}})();
+const save=()=>localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));
+const $=id=>document.getElementById(id);
+const on=(el,ev,fn)=>el&&el.addEventListener(ev,fn);
 
-const API_BASE = "";
-
-// ---------- Local settings ----------
-const SETTINGS_KEY = "tt.settings.v1";
-function loadSettings(){
-  try{
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
-  }catch{ return {}; }
+function applyTheme(){
+  const sysDark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const theme=settings.theme==="auto"?(sysDark?"dark":"light"):settings.theme;
+  if(theme==="dark")document.documentElement.setAttribute("data-theme","dark");
+  else document.documentElement.removeAttribute("data-theme");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme==="dark"?"#0b1220":"#eef1f6");
 }
-function saveSettings(s){
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+function cycleTheme(){
+  settings.theme=settings.theme==="auto"?"dark":(settings.theme==="dark"?"light":"auto");
+  save(); applyTheme();
 }
-const settings = { sort: "due", ...loadSettings() };
+applyTheme();
+window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change",()=>{if(settings.theme==="auto")applyTheme()});
 
-// ---------- State ----------
-const state = {
-  view: "tasks",
-  activeKind: "list",
-  activeId: "inbox",
-  lists: [],
-  tasks: [],
-  completed: [],
-  collapsed: new Set(),
-  completedCollapsed: true,
-  editingTaskId: null,
-  editingTask: null,
-  calendar: {
-    year: new Date().getFullYear(),
-    month: new Date().getMonth(),
-    selected: new Date(),
-  },
-  composer: {
-    listId: "inbox",
-    dueDate: null,
-  }
-};
+if("serviceWorker"in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js").catch(()=>{}))}
 
-// ---------- DOM ----------
-const $ = (id) => document.getElementById(id);
+const API_BASE="";
+async function api(path,opt){const r=await fetch(API_BASE+path,opt);if(!r.ok)throw new Error(await r.text());return r.json()}
+const apiGetFolders=()=>api("/api/folders");
+const apiCreateFolder=p=>api("/api/folders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiGetLists=()=>api("/api/lists");
+const apiCreateList=p=>api("/api/lists",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiGetTasks=params=>api("/api/tasks?"+new URLSearchParams(params).toString());
+const apiCreateTask=p=>api("/api/tasks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiPatchTask=(id,p)=>api("/api/tasks/"+encodeURIComponent(id),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiDeleteTask=id=>api("/api/tasks/"+encodeURIComponent(id),{method:"DELETE"});
+const apiReorder=p=>api("/api/tasks/reorder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 
-const drawer = $("drawer");
-const drawerBackdrop = $("drawerBackdrop");
-const listsContainer = $("listsContainer");
-const countToday = $("countToday");
+const state={activeKind:"smart",activeId:"all",folders:[],lists:[],tasks:[],done:[],collapsed:new Set(),doneCollapsed:true,openSwipeId:null,composer:{listId:"inbox",dueDate:null,priority:0}};
+const iso=d=>{const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0");return `${y}-${m}-${dd}`};
+const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x};
+const fmtDue=s=>{if(!s)return"";const t=iso(new Date()),tm=iso(addDays(new Date(),1));if(s===t)return"Сегодня";if(s===tm)return"Завтра";const [y,m,d]=s.split("-");return `${d}.${m}`};
+const bucket=s=>{if(!s)return"Без даты";const t=iso(new Date()),tm=iso(addDays(new Date(),1));if(s===t)return"Сегодня";if(s===tm)return"Завтра";return"Позже"};
+const parseQuick=raw=>{const tags=[],kept=[];let pr=null;for(const p of raw.trim().split(/\s+/)){if(/^#\S+/.test(p)){tags.push(p.replace(/^#/,""));continue}const m=p.match(/^!([1-3])$/);if(m){pr=parseInt(m[1],10);continue}kept.push(p)}return{title:kept.join(" ").trim(),tags,priority:pr}};
 
-const btnMenu = $("btnMenu");
-const pageTitle = $("pageTitle");
-const pageSub = $("pageSub");
-
-const viewTasks = $("viewTasks");
-const viewCalendar = $("viewCalendar");
-const viewSearch = $("viewSearch");
-const viewFocus = $("viewFocus");
-
-const btnSort = $("btnSort");
-const btnQuickAdd = $("btnQuickAdd");
-
-const groupsEl = $("groups");
-const completedHead = $("completedHead");
-const completedChevron = $("completedChevron");
-const completedCount = $("completedCount");
-const completedTasksEl = $("completedTasks");
-const emptyState = $("emptyState");
-
-const fabAdd = $("fabAdd");
-
-const searchInput = $("searchInput");
-const bnItems = Array.from(document.querySelectorAll(".bn-item"));
-
-const calTitle = $("calTitle");
-const calPrev = $("calPrev");
-const calNext = $("calNext");
-const calToday = $("calToday");
-const calendarGrid = $("calendarGrid");
-const calSheetTitle = $("calSheetTitle");
-const calTasks = $("calTasks");
-const calEmpty = $("calEmpty");
-
-const globalSearchInput = $("globalSearchInput");
-const searchResults = $("searchResults");
-const searchEmpty = $("searchEmpty");
-
-const btnAddList = $("btnAddList");
-const listBackdrop = $("listBackdrop");
-const listSheet = $("listSheet");
-const listForm = $("listForm");
-const listEmoji = $("listEmoji");
-const listTitle = $("listTitle");
-const listHint = $("listHint");
-const btnListCancel = $("btnListCancel");
-
-const sheetBackdrop = $("sheetBackdrop");
-const sheet = $("sheet");
-const taskForm = $("taskForm");
-const taskTitle = $("taskTitle");
-const hint = $("hint");
-const toolToday = $("toolToday");
-const toolTomorrow = $("toolTomorrow");
-const toolDate = $("toolDate");
-const toolClearDue = $("toolClearDue");
-const listSelect = $("listSelect");
-const btnCancel = $("btnCancel");
-
-// Sort sheet
-const sortBackdrop = $("sortBackdrop");
-const sortSheet = $("sortSheet");
-const sortCancel = $("sortCancel");
-const sortOptions = Array.from(document.querySelectorAll(".sheet-option[data-sort]"));
-
-// Composer
-const composer = $("composer");
-const compInput = $("compInput");
-const compListBtn = $("compListBtn");
-const compDueBtn = $("compDueBtn");
-const compAddBtn = $("compAddBtn");
-const compDueDate = $("compDueDate");
-
-// List picker for composer
-const pickBackdrop = $("pickBackdrop");
-const pickSheet = $("pickSheet");
-const pickList = $("pickList");
-const pickCancel = $("pickCancel");
-
-// ---------- Utils ----------
-function iso(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
+function applyResponsive(){
+  const desktop=window.matchMedia("(min-width: 1024px)").matches;
+  if(desktop){$("drawer").hidden=false;$("drawerBackdrop").hidden=true}
+  else{ if(!$("drawerBackdrop").hidden) return; $("drawer").hidden=true }
 }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate()+n); return x; }
+window.addEventListener("resize",applyResponsive);
 
-function fmtDue(dueStr) {
-  if (!dueStr) return "";
-  const t = iso(new Date());
-  const tm = iso(addDays(new Date(), 1));
-  if (dueStr === t) return "Сегодня";
-  if (dueStr === tm) return "Завтра";
-  const [y,m,d] = dueStr.split("-");
-  return `${d}.${m}`;
-}
-function bucketTitle(dueStr) {
-  if (!dueStr) return "Без даты";
-  const t = iso(new Date());
-  const tm = iso(addDays(new Date(), 1));
-  if (dueStr === t) return "Сегодня";
-  if (dueStr === tm) return "Завтра";
-  return "Позже";
-}
-function monthName(monthIdx) {
-  const names = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
-  return names[monthIdx] || "";
-}
-function escapeHtml(s) {
-  return s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
-}
-function setBtnSortLabel(){
-  btnSort.textContent = settings.sort === "created" ? "по созданию…" : "по дате…";
-}
+function openDrawer(){ if(window.matchMedia("(min-width: 1024px)").matches) return; $("drawer").hidden=false; $("drawerBackdrop").hidden=false }
+function closeDrawer(){ if(window.matchMedia("(min-width: 1024px)").matches) return; $("drawer").hidden=true; $("drawerBackdrop").hidden=true }
 
-// ---------- API ----------
-async function api(path, options) {
-  const r = await fetch(`${API_BASE}${path}`, options);
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(t || `HTTP ${r.status}`);
-  }
-  return r.json();
-}
-const apiGetLists = () => api("/api/lists");
-const apiCreateList = (payload) => api("/api/lists", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
-const apiGetTasks = (params) => {
-  const usp = new URLSearchParams(params);
-  return api(`/api/tasks?${usp.toString()}`);
-};
-const apiCreateTask = (payload) => api("/api/tasks", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
-const apiPatchTask = (id, payload) => api(`/api/tasks/${encodeURIComponent(id)}`, { method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
-const apiDeleteTask = (id) => api(`/api/tasks/${encodeURIComponent(id)}`, { method:"DELETE" });
-
-// ---------- Responsive: persistent drawer on desktop ----------
-function applyResponsiveLayout() {
-  const desktop = window.matchMedia("(min-width: 1024px)").matches;
-  if (desktop) {
-    drawer.hidden = false;
-    drawerBackdrop.hidden = true;
-  } else {
-    // keep hidden by default unless opened
-    if (!drawerBackdrop.hidden) return;
-    drawer.hidden = true;
-  }
-}
-window.addEventListener("resize", applyResponsiveLayout);
-
-// ---------- Drawer ----------
-function openDrawer() {
-  if (window.matchMedia("(min-width: 1024px)").matches) return;
-  drawer.hidden = false;
-  drawerBackdrop.hidden = false;
-}
-function closeDrawer() {
-  if (window.matchMedia("(min-width: 1024px)").matches) return;
-  drawer.hidden = true;
-  drawerBackdrop.hidden = true;
-}
-btnMenu.addEventListener("click", openDrawer);
-drawerBackdrop.addEventListener("click", closeDrawer);
-
-// ---------- Views ----------
-function updateHeaderTitle() {
-  if (state.activeKind === "smart" && state.activeId === "today") {
-    pageTitle.textContent = "Сегодня";
-    pageSub.textContent = "";
-    return;
-  }
-  const l = state.lists.find(x => x.id === state.activeId);
-  pageTitle.textContent = l ? l.title : "Входящие";
-  pageSub.textContent = "";
-}
-
-function setView(view) {
-  state.view = view;
-  bnItems.forEach(b => b.classList.toggle("active", b.dataset.view === view));
-
-  [viewTasks, viewCalendar, viewSearch, viewFocus].forEach(v => v.classList.remove("view-active"));
-  if (view === "tasks") viewTasks.classList.add("view-active");
-  if (view === "calendar") viewCalendar.classList.add("view-active");
-  if (view === "search") viewSearch.classList.add("view-active");
-  if (view === "focus") viewFocus.classList.add("view-active");
-
-  if (view === "calendar") {
-    pageTitle.textContent = monthName(state.calendar.month);
-    pageSub.textContent = "";
-    renderCalendar();
-    loadCalendarTasks();
-  } else if (view === "search") {
-    pageTitle.textContent = "Поиск";
-    pageSub.textContent = "";
-    globalSearchInput.focus();
-  } else if (view === "focus") {
-    pageTitle.textContent = "Фокус";
-    pageSub.textContent = "";
-  } else {
-    updateHeaderTitle();
-    loadTasksForCurrent();
-  }
-}
-bnItems.forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
-
-// ---------- Lists UI ----------
-function setActiveDrawerItem(kind, id) {
-  state.activeKind = kind;
-  state.activeId = id;
-
-  const items = Array.from(document.querySelectorAll(".drawer-item"));
-  items.forEach(it => {
-    const match = it.dataset.kind === kind && it.dataset.id === id;
-    it.classList.toggle("active", match);
-  });
-
-  // default composer list = current list
-  if (kind === "list") state.composer.listId = id;
-
-  updateHeaderTitle();
+function setActive(kind,id){
+  state.activeKind=kind; state.activeId=id;
+  document.querySelectorAll(".drawer-item").forEach(b=>b.classList.toggle("active", b.dataset.kind===kind && b.dataset.id===id));
+  if(kind==="list") state.composer.listId=id;
   closeDrawer();
-  setView("tasks");
+  $("pageTitle").textContent = kind==="smart"?(id==="all"?"Все":id==="today"?"Сегодня":"Следующие 7"):(state.lists.find(l=>l.id===id)?.title||"Входящие");
+  loadTasks();
 }
 
-function renderLists() {
-  listsContainer.innerHTML = "";
-  for (const l of state.lists) {
-    const btn = document.createElement("button");
-    btn.className = "drawer-item";
-    btn.dataset.kind = "list";
-    btn.dataset.id = l.id;
-    btn.innerHTML = `
-      <span class="di-emoji">${escapeHtml(l.emoji || "📌")}</span>
-      <span class="di-title">${escapeHtml(l.title)}</span>
-      <span class="di-count" data-count="${l.id}">—</span>
-    `;
-    btn.addEventListener("click", () => setActiveDrawerItem("list", l.id));
-    listsContainer.appendChild(btn);
-  }
-
-  const active = document.querySelector(\`.drawer-item[data-kind="\${state.activeKind}"][data-id="\${state.activeId}"]\`);
-  if (active) active.classList.add("active");
-}
-
-function renderListSelect() {
-  listSelect.innerHTML = "";
-  for (const l of state.lists) {
-    const opt = document.createElement("option");
-    opt.value = l.id;
-    opt.textContent = `${l.emoji || "📌"} ${l.title}`;
-    listSelect.appendChild(opt);
+function renderLists(){
+  const el=$("listsContainer"); if(!el) return; el.innerHTML="";
+  // no folder grouping for this compact build; just list
+  for(const l of state.lists){
+    const b=document.createElement("button");
+    b.className="drawer-item"; b.dataset.kind="list"; b.dataset.id=l.id;
+    b.innerHTML=`<span class="di-emoji">${l.emoji||"📌"}</span><span class="di-title">${l.title}</span><span class="di-count" data-count="${l.id}">—</span>`;
+    b.addEventListener("click",()=>setActive("list",l.id));
+    el.appendChild(b);
   }
 }
 
-function renderPickList(){
-  pickList.innerHTML = "";
-  for (const l of state.lists) {
-    const b = document.createElement("button");
-    b.className = "sheet-option";
-    b.textContent = `${l.emoji || "📌"} ${l.title}`;
-    b.addEventListener("click", () => {
-      state.composer.listId = l.id;
-      closePickSheet();
-    });
-    pickList.appendChild(b);
+function renderFolderSelect(){
+  const sel=$("folderSelect"); if(!sel) return;
+  sel.innerHTML='<option value="">Без папки</option>';
+  for(const f of state.folders){const o=document.createElement("option");o.value=f.id;o.textContent=`${f.emoji||"📁"} ${f.title}`;sel.appendChild(o)}
+}
+
+function openSheet(b,s){$(b).hidden=false;$(s).hidden=false}
+function closeSheet(b,s){$(b).hidden=true;$(s).hidden=true}
+
+function closeOpenSwipe(except=null){
+  if(!state.openSwipeId) return;
+  if(except && state.openSwipeId===except) return;
+  document.querySelector(`.task[data-id="${state.openSwipeId}"] .task-card`)?.style.setProperty("transform","translateX(0)");
+  state.openSwipeId=null;
+}
+document.addEventListener("click",(e)=>{
+  if(!state.openSwipeId) return;
+  const row=document.querySelector(`.task[data-id="${state.openSwipeId}"]`);
+  if(row && !row.contains(e.target)) closeOpenSwipe();
+});
+
+function attachSwipe(li,card,t){
+  let sx=0,sy=0,dx=0,dy=0,drag=false,pid=null; const OPEN=110,TH=60;
+  const down=e=>{pid=e.pointerId;sx=e.clientX;sy=e.clientY;dx=dy=0;drag=true;card.style.transition="none";card.setPointerCapture(pid);closeOpenSwipe(t.id)};
+  const move=e=>{if(!drag)return;dx=e.clientX-sx;dy=e.clientY-sy;if(Math.abs(dy)>14&&Math.abs(dy)>Math.abs(dx)){up(e,true);return}const x=Math.max(-OPEN,Math.min(OPEN,dx));card.style.transform=`translateX(${x}px)`};
+  const reset=()=>{card.style.transition="transform 160ms ease";card.style.transform="translateX(0)"};
+  const openL=()=>{card.style.transition="transform 160ms ease";card.style.transform=`translateX(${OPEN}px)`;state.openSwipeId=t.id};
+  const openR=()=>{card.style.transition="transform 160ms ease";card.style.transform=`translateX(${-OPEN}px)`;state.openSwipeId=t.id};
+  const up=(e,c=false)=>{if(!drag)return;drag=false;try{card.releasePointerCapture(pid)}catch{}card.style.transition="transform 160ms ease";if(c){reset();return}if(dx>TH){openL();return}if(dx<-TH){openR();return}reset()};
+  on(card,"pointerdown",down);on(card,"pointermove",move);on(card,"pointerup",up);on(card,"pointercancel",e=>up(e,true));
+}
+
+function enableDrag(li,card,id){
+  card.draggable=true;
+  on(card,"dragstart",(e)=>{li.classList.add("dragging");e.dataTransfer.setData("text/plain",id);e.dataTransfer.effectAllowed="move"});
+  on(card,"dragend",()=>li.classList.remove("dragging"));
+}
+
+function getAfter(container,y){
+  const els=[...container.querySelectorAll(".task:not(.dragging)")];
+  let best={o:-1e9,el:null};
+  for(const el of els){
+    const b=el.getBoundingClientRect();
+    const off=y-b.top-b.height/2;
+    if(off<0 && off>best.o) best={o:off,el};
   }
+  return best.el;
 }
-
-// ---------- Sort sheet ----------
-function openSortSheet(){
-  sortBackdrop.hidden = false;
-  sortSheet.hidden = false;
+async function persistOrder(){
+  if(!(settings.sort==="manual" && state.activeKind==="list")) return;
+  const ids=[...document.querySelectorAll("#groups .task")].map(x=>x.dataset.id).filter(Boolean);
+  if(!ids.length) return;
+  await apiReorder({listId:state.activeId,orderedIds:ids});
+  await loadTasks();
 }
-function closeSortSheet(){
-  sortBackdrop.hidden = true;
-  sortSheet.hidden = true;
-}
-btnSort.addEventListener("click", openSortSheet);
-sortBackdrop.addEventListener("click", closeSortSheet);
-sortCancel.addEventListener("click", closeSortSheet);
-
-sortOptions.forEach(btn => {
-  btn.addEventListener("click", async () => {
-    settings.sort = btn.dataset.sort;
-    saveSettings(settings);
-    setBtnSortLabel();
-    closeSortSheet();
-    await loadTasksForCurrent();
+function setupDrop(){
+  if(!(settings.sort==="manual" && state.activeKind==="list")) return;
+  document.querySelectorAll("#groups .tasks").forEach(ul=>{
+    on(ul,"dragover",(e)=>{e.preventDefault();const drag=document.querySelector(".task.dragging");if(!drag)return;const after=getAfter(ul,e.clientY);if(!after)ul.appendChild(drag);else ul.insertBefore(drag,after)});
+    on(ul,"drop",(e)=>{e.preventDefault();persistOrder()});
   });
-});
-
-// ---------- Quick composer (TickTick-like) ----------
-function openPickSheet(){
-  renderPickList();
-  pickBackdrop.hidden = false;
-  pickSheet.hidden = false;
-}
-function closePickSheet(){
-  pickBackdrop.hidden = true;
-  pickSheet.hidden = true;
-}
-compListBtn.addEventListener("click", openPickSheet);
-pickBackdrop.addEventListener("click", closePickSheet);
-pickCancel.addEventListener("click", closePickSheet);
-
-compDueBtn.addEventListener("click", () => {
-  // open browser date picker
-  compDueDate.click();
-});
-compDueDate.addEventListener("change", () => {
-  state.composer.dueDate = compDueDate.value ? compDueDate.value : null;
-});
-
-async function addFromComposer(){
-  const title = compInput.value.trim();
-  if (!title) return;
-
-  let due = state.composer.dueDate;
-  // If smart today active, default to today
-  if (state.activeKind === "smart" && state.activeId === "today" && !due) {
-    due = iso(new Date());
-  }
-
-  const listId = state.activeKind === "list" ? state.activeId : (state.composer.listId || "inbox");
-
-  await apiCreateTask({ title, listId, dueDate: due });
-  compInput.value = "";
-  state.composer.dueDate = null;
-  compDueDate.value = "";
-  await refreshSidebarCounts();
-  await loadTasksForCurrent();
-  if (state.view === "calendar") loadCalendarTasks();
-}
-compAddBtn.addEventListener("click", () => addFromComposer());
-compInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    addFromComposer();
-  }
-});
-
-btnQuickAdd.addEventListener("click", () => compInput.focus());
-fabAdd.addEventListener("click", () => compInput.focus());
-
-// ---------- Edit task sheet ----------
-function openEditSheet(task) {
-  state.editingTaskId = task.id;
-  state.editingTask = task;
-
-  taskTitle.value = task.title;
-  hint.hidden = true;
-
-  toolDate.value = task.dueDate || "";
-  listSelect.value = task.listId;
-
-  sheetBackdrop.hidden = false;
-  sheet.hidden = false;
-  setTimeout(() => taskTitle.focus(), 0);
 }
 
-function closeEditSheet() {
-  sheetBackdrop.hidden = true;
-  sheet.hidden = true;
-  state.editingTaskId = null;
-  state.editingTask = null;
-  taskTitle.value = "";
-  toolDate.value = "";
-  hint.hidden = true;
-}
+function taskRow(t){
+  const li=document.createElement("li"); li.className="task"+(t.completed?" completed":""); li.dataset.id=t.id;
+  const actions=document.createElement("div"); actions.className="swipe-actions";
+  const ok=document.createElement("button"); ok.className="action-btn complete"; ok.textContent="✓";
+  const del=document.createElement("button"); del.className="action-btn delete"; del.textContent="🗑";
+  actions.appendChild(ok); actions.appendChild(del);
 
-sheetBackdrop.addEventListener("click", closeEditSheet);
-btnCancel.addEventListener("click", closeEditSheet);
+  const card=document.createElement("div"); card.className="task-card";
+  const cb=document.createElement("div"); cb.className="checkbox"+(t.completed?" checked":"");
+  const main=document.createElement("div"); main.className="task-main";
+  const title=document.createElement("div"); title.className="task-title";
+  if(t.priority>0){const f=document.createElement("span");f.className="flag";f.textContent=t.priority===3?"!!!":t.priority===2?"!!":"!";title.appendChild(f)}
+  const tt=document.createElement("span"); tt.textContent=t.title; title.appendChild(tt);
+  const meta=document.createElement("div"); meta.className="task-meta";
+  const list=state.lists.find(l=>l.id===t.listId);
+  if(list){const s=document.createElement("span");s.textContent=`${list.emoji} ${list.title}`;meta.appendChild(s)}
+  (t.tags||[]).slice(0,3).forEach(tag=>{const c=document.createElement("span");c.className="chipTag";c.textContent="#"+tag;meta.appendChild(c)});
+  main.appendChild(title); if(meta.childNodes.length) main.appendChild(meta);
+  const due=document.createElement("div"); due.className="due"; due.textContent=fmtDue(t.dueDate);
+  const right=document.createElement("div"); right.className="task-actions";
+  const bE=document.createElement("button"); bE.className="small-btn"; bE.textContent="✎";
+  const bD=document.createElement("button"); bD.className="small-btn"; bD.textContent="🗑";
+  right.appendChild(bE); right.appendChild(bD);
+  card.appendChild(cb); card.appendChild(main); card.appendChild(due); card.appendChild(right);
+  li.appendChild(actions); li.appendChild(card);
 
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    if (!sheet.hidden) closeEditSheet();
-    if (!listSheet.hidden) closeListSheet();
-    if (!sortSheet.hidden) closeSortSheet();
-    if (!pickSheet.hidden) closePickSheet();
-    closeDrawer();
-  }
-});
+  attachSwipe(li,card,t);
+  on(ok,"click",async(e)=>{e.stopPropagation();await apiPatchTask(t.id,{completed:true});closeOpenSwipe();await refreshCounts();await loadTasks()});
+  on(del,"click",async(e)=>{e.stopPropagation();if(!confirm("Удалить?"))return;await apiDeleteTask(t.id);closeOpenSwipe();await refreshCounts();await loadTasks()});
+  on(cb,"click",async(e)=>{e.stopPropagation();await apiPatchTask(t.id,{completed:!t.completed});await refreshCounts();await loadTasks()});
+  on(bD,"click",async(e)=>{e.stopPropagation();if(!confirm("Удалить?"))return;await apiDeleteTask(t.id);await refreshCounts();await loadTasks()});
+  on(bE,"click",(e)=>{e.stopPropagation();const nt=prompt("Изменить",t.title);if(nt===null)return;const val=nt.trim();if(!val)return;apiPatchTask(t.id,{title:val}).then(loadTasks)});
 
-toolToday.addEventListener("click", () => { toolDate.value = iso(new Date()); });
-toolTomorrow.addEventListener("click", () => { toolDate.value = iso(addDays(new Date(), 1)); });
-toolClearDue.addEventListener("click", () => { toolDate.value = ""; });
-
-taskForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const title = taskTitle.value.trim();
-  if (!title) {
-    hint.hidden = false;
-    taskTitle.focus();
-    return;
-  }
-
-  const dueDate = toolDate.value ? toolDate.value : null;
-  const listId = listSelect.value;
-
-  try {
-    await apiPatchTask(state.editingTaskId, { title, dueDate, listId });
-    closeEditSheet();
-    await refreshSidebarCounts();
-    await loadTasksForCurrent();
-    if (state.view === "calendar") renderCalendar();
-  } catch (err) {
-    alert(err.message || "Ошибка сохранения");
-  }
-});
-
-// ---------- List sheet ----------
-function openListSheet() {
-  listEmoji.value = "📌";
-  listTitle.value = "";
-  listHint.hidden = true;
-  listBackdrop.hidden = false;
-  listSheet.hidden = false;
-  setTimeout(() => listTitle.focus(), 0);
-}
-function closeListSheet() {
-  listBackdrop.hidden = true;
-  listSheet.hidden = true;
-  listHint.hidden = true;
-}
-btnAddList.addEventListener("click", openListSheet);
-listBackdrop.addEventListener("click", closeListSheet);
-btnListCancel.addEventListener("click", closeListSheet);
-
-listForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const title = listTitle.value.trim();
-  const emoji = (listEmoji.value || "📌").trim() || "📌";
-  if (!title) {
-    listHint.hidden = false;
-    listTitle.focus();
-    return;
-  }
-  try {
-    const created = await apiCreateList({ title, emoji });
-    closeListSheet();
-    await loadLists();
-    setActiveDrawerItem("list", created.id);
-  } catch (err) {
-    alert(err.message || "Ошибка создания списка");
-  }
-});
-
-// ---------- Tasks rendering ----------
-function groupTasks(tasks) {
-  const groups = new Map();
-  for (const t of tasks) {
-    const key = bucketTitle(t.dueDate);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(t);
-  }
-  const order = ["Сегодня", "Завтра", "Позже", "Без даты"];
-  return order.filter(k => groups.has(k)).map(k => ({ key: k, title: k, items: groups.get(k) }));
-}
-
-// Swipe handling
-function attachSwipe(li, card, task) {
-  let startX = 0, startY = 0, dragging = false, dx = 0, dy = 0;
-  let pointerId = null;
-
-  const THRESH = 90;
-  const CLAMP = 140;
-
-  function onDown(e){
-    // only primary button / touch
-    pointerId = e.pointerId;
-    startX = e.clientX;
-    startY = e.clientY;
-    dragging = true;
-    dx = 0; dy = 0;
-    card.style.transition = "none";
-    card.setPointerCapture(pointerId);
-  }
-  function onMove(e){
-    if (!dragging) return;
-    dx = e.clientX - startX;
-    dy = e.clientY - startY;
-
-    // If vertical scroll dominates, cancel swipe
-    if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
-      onUp(e, true);
-      return;
-    }
-    // clamp horizontal
-    const x = Math.max(-CLAMP, Math.min(CLAMP, dx));
-    card.style.transform = `translateX(${x}px)`;
-  }
-
-  async function complete(){
-    await apiPatchTask(task.id, { completed: true });
-  }
-  async function remove(){
-    await apiDeleteTask(task.id);
-  }
-
-  function reset(){
-    card.style.transition = "transform 140ms ease";
-    card.style.transform = "translateX(0)";
-  }
-
-  async function onUp(e, cancel=false){
-    if (!dragging) return;
-    dragging = false;
-    try { card.releasePointerCapture(pointerId); } catch {}
-    card.style.transition = "transform 140ms ease";
-
-    if (cancel) { reset(); return; }
-
-    if (dx > THRESH) {
-      card.style.transform = `translateX(${CLAMP}px)`;
-      await complete();
-      await refreshSidebarCounts();
-      await loadTasksForCurrent();
-      if (state.view === "calendar") loadCalendarTasks();
-      reset();
-      return;
-    }
-    if (dx < -THRESH) {
-      card.style.transform = `translateX(${-CLAMP}px)`;
-      await remove();
-      await refreshSidebarCounts();
-      await loadTasksForCurrent();
-      if (state.view === "calendar") loadCalendarTasks();
-      reset();
-      return;
-    }
-    reset();
-  }
-
-  card.addEventListener("pointerdown", onDown);
-  card.addEventListener("pointermove", onMove);
-  card.addEventListener("pointerup", onUp);
-  card.addEventListener("pointercancel", (e) => onUp(e, true));
-}
-
-function createTaskLi(t, compact = false) {
-  const li = document.createElement("li");
-  li.className = "task" + (t.completed ? " completed" : "");
-
-  const bg = document.createElement("div");
-  bg.className = "swipe-bg";
-  bg.innerHTML = `<div class="left">✓ Выполнить</div><div class="right">🗑 Удалить</div>`;
-
-  const card = document.createElement("div");
-  card.className = "task-card";
-
-  const cb = document.createElement("div");
-  cb.className = "checkbox" + (t.completed ? " checked" : "");
-  cb.title = "Отметить выполненным";
-
-  const main = document.createElement("div");
-  main.className = "task-main";
-
-  const title = document.createElement("div");
-  title.className = "task-title";
-  title.textContent = t.title;
-
-  const meta = document.createElement("div");
-  meta.className = "task-meta";
-  const list = state.lists.find(l => l.id === t.listId);
-  meta.textContent = list ? `${list.emoji} ${list.title}` : "";
-
-  main.appendChild(title);
-  if (meta.textContent) main.appendChild(meta);
-
-  const due = document.createElement("div");
-  due.className = "due";
-  due.textContent = fmtDue(t.dueDate);
-
-  const actions = document.createElement("div");
-  actions.className = "task-actions";
-
-  const btnEdit = document.createElement("button");
-  btnEdit.className = "small-btn";
-  btnEdit.textContent = "✎";
-  btnEdit.title = "Редактировать";
-
-  const btnDel = document.createElement("button");
-  btnDel.className = "small-btn";
-  btnDel.textContent = "🗑";
-  btnDel.title = "Удалить";
-
-  actions.appendChild(btnEdit);
-  actions.appendChild(btnDel);
-
-  card.appendChild(cb);
-  card.appendChild(main);
-  card.appendChild(due);
-  card.appendChild(actions);
-
-  li.appendChild(bg);
-  li.appendChild(card);
-
-  // click handlers
-  cb.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    await apiPatchTask(t.id, { completed: !t.completed });
-    await refreshSidebarCounts();
-    await loadTasksForCurrent();
-    if (state.view === "calendar") loadCalendarTasks();
-  });
-
-  btnEdit.addEventListener("click", (e) => { e.stopPropagation(); openEditSheet(t); });
-  title.addEventListener("dblclick", () => openEditSheet(t));
-
-  btnDel.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const ok = confirm("Удалить задачу?");
-    if (!ok) return;
-    await apiDeleteTask(t.id);
-    await refreshSidebarCounts();
-    await loadTasksForCurrent();
-    if (state.view === "calendar") loadCalendarTasks();
-  });
-
-  // swipe only for active tasks (feel free to allow also for completed)
-  attachSwipe(li, card, t);
-
+  if(settings.sort==="manual" && state.activeKind==="list" && !t.completed) enableDrag(li,card,t.id);
   return li;
 }
 
-function renderTasksScreen() {
-  groupsEl.innerHTML = "";
-  completedTasksEl.innerHTML = "";
-
-  const active = state.tasks;
-  const completed = state.completed;
-
-  if (active.length === 0 && completed.length === 0) emptyState.hidden = false;
-  else emptyState.hidden = true;
-
-  const grouped = groupTasks(active);
-
-  for (const g of grouped) {
-    const section = document.createElement("section");
-    section.className = "section";
-
-    const head = document.createElement("button");
-    head.className = "section-head";
-    head.innerHTML = `
-      <span>${g.title === "Сегодня" ? "Пн, Сегодня" : g.title}</span>
-      <span class="section-right">${g.items.length} <span>${state.collapsed.has(g.key) ? "▸" : "▾"}</span></span>
-    `;
-    head.addEventListener("click", () => {
-      if (state.collapsed.has(g.key)) state.collapsed.delete(g.key);
-      else state.collapsed.add(g.key);
-      renderTasksScreen();
-    });
-
-    const ul = document.createElement("ul");
-    ul.className = "tasks";
-    if (!state.collapsed.has(g.key)) for (const t of g.items) ul.appendChild(createTaskLi(t));
-
-    section.appendChild(head);
-    section.appendChild(ul);
-    groupsEl.appendChild(section);
-  }
-
-  completedCount.textContent = String(completed.length);
-  completedChevron.textContent = state.completedCollapsed ? "▸" : "▾";
-  if (!state.completedCollapsed) {
-    for (const t of completed) completedTasksEl.appendChild(createTaskLi(t));
-  }
+function groupTasks(ts){
+  if(settings.sort==="manual") return [{key:"all",title:"Все",items:ts}];
+  const m=new Map();
+  ts.forEach(t=>{const k=bucket(t.dueDate); if(!m.has(k))m.set(k,[]); m.get(k).push(t)});
+  const order=["Сегодня","Завтра","Позже","Без даты"];
+  return order.filter(k=>m.has(k)).map(k=>({key:k,title:k,items:m.get(k)}));
 }
 
-completedHead.addEventListener("click", () => {
-  state.completedCollapsed = !state.completedCollapsed;
-  renderTasksScreen();
-});
-
-// ---------- Loading tasks ----------
-async function loadLists() {
-  state.lists = await apiGetLists();
-  renderLists();
-  renderListSelect();
+function render(){
+  const groups=$("groups"); const done=$("completedTasks"); const empty=$("emptyState");
+  groups.innerHTML=""; done.innerHTML="";
+  empty.hidden=!(state.tasks.length===0 && state.done.length===0);
+  groupTasks(state.tasks).forEach(g=>{
+    const sec=document.createElement("section");
+    const head=document.createElement("div"); head.className="section-head"; head.textContent=g.title;
+    const ul=document.createElement("ul"); ul.className="tasks";
+    if(!state.collapsed.has(g.key)) g.items.forEach(t=>ul.appendChild(taskRow(t)));
+    sec.appendChild(head); sec.appendChild(ul); groups.appendChild(sec);
+  });
+  $("completedCount").textContent=String(state.done.length);
+  $("completedChevron").textContent=state.doneCollapsed?"▸":"▾";
+  if(!state.doneCollapsed) state.done.forEach(t=>done.appendChild(taskRow(t)));
+  setupDrop();
 }
 
-async function loadTasksForCurrent() {
-  if (state.view !== "tasks") return;
+on($("completedHead"),"click",()=>{state.doneCollapsed=!state.doneCollapsed;render()});
 
-  const q = searchInput.value.trim();
-  const baseParams = { filter: "active", sort: settings.sort };
-  const completedParams = { filter: "completed", sort: settings.sort };
+async function loadTasks(){
+  closeOpenSwipe();
+  const q=$("searchInput").value.trim();
+  const base={filter:"active",sort:settings.sort};
+  const done={filter:"completed",sort:settings.sort};
+  if(q){base.q=q;done.q=q}
+  const today=iso(new Date()), nextTo=iso(addDays(new Date(),6));
+  if(state.activeKind==="smart"){
+    if(state.activeId==="today"){base.due=today;done.due=today}
+    if(state.activeId==="next7"){base.due_from=today;base.due_to=nextTo;done.due_from=today;done.due_to=nextTo}
+  } else { base.list_id=state.activeId; done.list_id=state.activeId }
+  const [a,d]=await Promise.all([apiGetTasks(base), apiGetTasks(done)]);
+  state.tasks=a; state.done=d;
+  render();
+}
 
-  if (q) { baseParams.q = q; completedParams.q = q; }
-
-  if (state.activeKind === "smart" && state.activeId === "today") {
-    const d = iso(new Date());
-    baseParams.due = d;
-    completedParams.due = d;
-  } else {
-    baseParams.list_id = state.activeId;
-    completedParams.list_id = state.activeId;
-  }
-
-  const [active, done] = await Promise.all([
-    apiGetTasks(baseParams),
-    apiGetTasks(completedParams),
+async function refreshCounts(){
+  const today=iso(new Date()), nextTo=iso(addDays(new Date(),6));
+  const [all,todayArr,next7Arr]=await Promise.all([
+    apiGetTasks({filter:"active",sort:"created"}),
+    apiGetTasks({filter:"active",due:today,sort:"created"}),
+    apiGetTasks({filter:"active",due_from:today,due_to:nextTo,sort:"created"})
   ]);
-
-  state.tasks = active;
-  state.completed = done;
-
-  renderTasksScreen();
-}
-
-searchInput.addEventListener("input", () => loadTasksForCurrent());
-
-// ---------- Sidebar counts ----------
-async function refreshSidebarCounts() {
-  const today = iso(new Date());
-  const todayActive = await apiGetTasks({ filter: "active", due: today, sort: "created" });
-  countToday.textContent = String(todayActive.length);
-
-  // per list counts (sequential but small; can optimize later with /api/stats)
-  for (const l of state.lists) {
-    const res = await apiGetTasks({ filter: "active", list_id: l.id, sort: "created" });
-    const el = document.querySelector(`[data-count="${l.id}"]`);
-    if (el) el.textContent = String(res.length);
+  $("countAll").textContent=String(all.length);
+  $("countToday").textContent=String(todayArr.length);
+  $("countNext7").textContent=String(next7Arr.length);
+  for(const l of state.lists){
+    const r=await apiGetTasks({filter:"active",list_id:l.id,sort:"created"});
+    document.querySelector(`[data-count="${l.id}"]`)?.replaceChildren(document.createTextNode(String(r.length)));
   }
 }
 
-// ---------- Calendar ----------
-function startOfMonthGrid(year, month) {
-  const first = new Date(year, month, 1);
-  const dow = first.getDay(); // 0=Sun
-  return addDays(first, -dow);
+async function loadMeta(){
+  state.folders=await apiGetFolders();
+  state.lists=await apiGetLists();
+  renderLists();
+  renderFolderSelect();
 }
 
-function renderCalendar() {
-  const y = state.calendar.year;
-  const m = state.calendar.month;
+function setSort(s){settings.sort=s;save();closeSheet("sortBackdrop","sortSheet");loadTasks()}
+function setSortLabel(){ /* icon only */ }
 
-  calTitle.textContent = `${monthName(m)}`;
+on($("btnTheme"),"click",cycleTheme);
+on($("btnMenu"),"click",openDrawer);
+on($("drawerBackdrop"),"click",closeDrawer);
 
-  calendarGrid.innerHTML = "";
-  const start = startOfMonthGrid(y, m);
-  const selectedIso = iso(state.calendar.selected);
+document.querySelectorAll('.drawer-item[data-kind="smart"]').forEach(b=>on(b,"click",()=>setActive("smart",b.dataset.id)));
 
-  for (let i = 0; i < 42; i++) {
-    const d = addDays(start, i);
-    const cell = document.createElement("div");
-    cell.className = "day";
-    const inMonth = d.getMonth() === m;
-    if (!inMonth) cell.classList.add("muted");
-    if (iso(d) === selectedIso) cell.classList.add("selected");
-    cell.textContent = String(d.getDate());
+on($("btnSort"),"click",()=>openSheet("sortBackdrop","sortSheet"));
+on($("sortBackdrop"),"click",()=>closeSheet("sortBackdrop","sortSheet"));
+on($("sortCancel"),"click",()=>closeSheet("sortBackdrop","sortSheet"));
+document.querySelectorAll('.sheet-option[data-sort]').forEach(b=>on(b,"click",()=>{settings.sort=b.dataset.sort;save();closeSheet("sortBackdrop","sortSheet");loadTasks()}));
 
-    if (inMonth) {
-      cell.addEventListener("click", () => {
-        state.calendar.selected = d;
-        renderCalendar();
-        loadCalendarTasks();
-      });
-    }
+on($("btnAdd"),"click",()=>openSheet("addBackdrop","addSheet"));
+on($("addBackdrop"),"click",()=>closeSheet("addBackdrop","addSheet"));
+on($("addCancel"),"click",()=>closeSheet("addBackdrop","addSheet"));
 
-    calendarGrid.appendChild(cell);
-  }
+on($("addListBtn"),"click",()=>{closeSheet("addBackdrop","addSheet");openSheet("listBackdrop","listSheet");$("listTitle").focus()});
+on($("btnListCancel"),"click",()=>closeSheet("listBackdrop","listSheet"));
+on($("listBackdrop"),"click",()=>closeSheet("listBackdrop","listSheet"));
+on($("listForm"),"submit",async(e)=>{e.preventDefault();const title=$("listTitle").value.trim();const emoji=($("listEmoji").value||"📌").trim()||"📌";const folderId=$("folderSelect").value||null;if(!title){$("listHint").hidden=false;return}await apiCreateList({title,emoji,folderId});closeSheet("listBackdrop","listSheet");await loadMeta();await refreshCounts()});
+
+on($("addFolderBtn"),"click",()=>{closeSheet("addBackdrop","addSheet");openSheet("folderBackdrop","folderSheet");$("folderTitle").focus()});
+on($("btnFolderCancel"),"click",()=>closeSheet("folderBackdrop","folderSheet"));
+on($("folderBackdrop"),"click",()=>closeSheet("folderBackdrop","folderSheet"));
+on($("folderForm"),"submit",async(e)=>{e.preventDefault();const title=$("folderTitle").value.trim();const emoji=($("folderEmoji").value||"📁").trim()||"📁";if(!title){$("folderHint").hidden=false;return}await apiCreateFolder({title,emoji});closeSheet("folderBackdrop","folderSheet");await loadMeta();await refreshCounts()});
+
+on($("compListBtn"),"click",()=>{const pl=$("pickList");pl.innerHTML="";state.lists.forEach(l=>{const btn=document.createElement("button");btn.className="sheet-option";btn.textContent=`${l.emoji} ${l.title}`;btn.onclick=()=>{state.composer.listId=l.id;closeSheet("pickBackdrop","pickSheet")};pl.appendChild(btn)});openSheet("pickBackdrop","pickSheet")});
+on($("pickBackdrop"),"click",()=>closeSheet("pickBackdrop","pickSheet"));
+on($("pickCancel"),"click",()=>closeSheet("pickBackdrop","pickSheet"));
+
+on($("compDueBtn"),"click",()=>$("compDueDate").click());
+on($("compDueDate"),"change",()=>state.composer.dueDate=$("compDueDate").value||null);
+on($("compFlagBtn"),"click",()=>{state.composer.priority=(state.composer.priority+1)%4; $("compFlagBtn").style.opacity=state.composer.priority? "1":"0.75"});
+$("compFlagBtn").style.opacity="0.75";
+
+async function addTask(){
+  const raw=$("compInput").value.trim(); if(!raw) return;
+  const p=parseQuick(raw); if(!p.title) return;
+  let due=state.composer.dueDate;
+  if(state.activeKind==="smart" && state.activeId==="today" && !due) due=iso(new Date());
+  const listId=state.activeKind==="list"?state.activeId:(state.composer.listId||"inbox");
+  const priority=p.priority ?? state.composer.priority;
+  await apiCreateTask({title:p.title,listId,dueDate:due,tags:p.tags,priority,notes:null});
+  $("compInput").value=""; state.composer.dueDate=null; $("compDueDate").value=""; state.composer.priority=0; $("compFlagBtn").style.opacity="0.75";
+  await refreshCounts(); await loadTasks();
 }
+on($("compAddBtn"),"click",addTask);
+on($("compInput"),"keydown",(e)=>{if(e.key==="Enter"){e.preventDefault();addTask()}});
+on($("searchInput"),"input",loadTasks);
 
-calPrev.addEventListener("click", () => {
-  const d = new Date(state.calendar.year, state.calendar.month - 1, 1);
-  state.calendar.year = d.getFullYear();
-  state.calendar.month = d.getMonth();
-  renderCalendar();
-  loadCalendarTasks();
-});
-calNext.addEventListener("click", () => {
-  const d = new Date(state.calendar.year, state.calendar.month + 1, 1);
-  state.calendar.year = d.getFullYear();
-  state.calendar.month = d.getMonth();
-  renderCalendar();
-  loadCalendarTasks();
-});
-calToday.addEventListener("click", () => {
-  const d = new Date();
-  state.calendar.year = d.getFullYear();
-  state.calendar.month = d.getMonth();
-  state.calendar.selected = d;
-  renderCalendar();
-  loadCalendarTasks();
-});
+document.querySelectorAll(".bn-item").forEach(b=>on(b,"click",()=>{document.querySelectorAll(".bn-item").forEach(x=>x.classList.toggle("active",x===b));document.querySelectorAll(".view").forEach(v=>v.classList.remove("view-active")); if(b.dataset.view==="search"){$("viewSearch").classList.add("view-active");$("globalSearchInput").focus();} else {$("viewTasks").classList.add("view-active"); loadTasks();}}));
 
-async function loadCalendarTasks() {
-  if (state.view !== "calendar") return;
-  const d = iso(state.calendar.selected);
-  const tasks = await apiGetTasks({ filter: "active", due: d, sort: "created" });
-  calTasks.innerHTML = "";
-  if (tasks.length === 0) {
-    calEmpty.hidden = false;
-  } else {
-    calEmpty.hidden = true;
-    for (const t of tasks) {
-      const li = createTaskLi(t);
-      li.querySelector(".task-actions")?.remove();
-      li.querySelector(".task-meta")?.remove();
-      calTasks.appendChild(li);
-    }
-  }
-  calSheetTitle.textContent = d === iso(new Date()) ? "СЕГОДНЯ" : d.split("-").reverse().join(".");
-}
+on($("globalSearchInput"),"input",async()=>{const q=$("globalSearchInput").value.trim();$("searchResults").innerHTML=""; if(!q){$("searchEmpty").hidden=true;return}const res=await apiGetTasks({filter:"all",q,sort:"created"}); if(!res.length){$("searchEmpty").hidden=false;return} $("searchEmpty").hidden=true; res.slice(0,50).forEach(t=>$("searchResults").appendChild(taskRow(t)))});
 
-// ---------- Global search ----------
-let searchTimer = null;
-globalSearchInput.addEventListener("input", () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(runGlobalSearch, 150);
-});
-
-async function runGlobalSearch() {
-  if (state.view !== "search") return;
-  const q = globalSearchInput.value.trim();
-  searchResults.innerHTML = "";
-  if (!q) {
-    searchEmpty.hidden = true;
-    return;
-  }
-  const res = await apiGetTasks({ filter: "all", q, sort: "created" });
-  if (res.length === 0) {
-    searchEmpty.hidden = false;
-    return;
-  }
-  searchEmpty.hidden = true;
-  for (const t of res) searchResults.appendChild(createTaskLi(t));
-}
-
-// ---------- Init ----------
-document.querySelector('.drawer-item[data-kind="smart"][data-id="today"]').addEventListener("click", () => setActiveDrawerItem("smart", "today"));
-
-async function init() {
-  setBtnSortLabel();
-  applyResponsiveLayout();
-
-  try {
-    await loadLists();
-    await refreshSidebarCounts();
-    setActiveDrawerItem("list", "inbox");
-  } catch (e) {
-    alert("Ошибка загрузки. " + (e.message || ""));
-  }
-}
-init();
+(async()=>{try{applyResponsive();await loadMeta();await refreshCounts();setActive("smart","all")}catch(e){alert("Ошибка: "+(e.message||e))}})();
