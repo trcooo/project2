@@ -1,9 +1,11 @@
-# TickTick-like ToDo — One-service Railway deploy + PostgreSQL
+# TickTick-like ToDo (UI v2) — One-click Railway + PostgreSQL
 
-## Что изменилось
-- **Один сервис**: FastAPI отдает и API, и фронтенд (static).
-- **Railway deploy без ручных настроек**: в репо есть `railway.toml` + `Procfile`, старт-команда уже прописана.
-- **PostgreSQL**: если в окружении есть `DATABASE_URL` — используем Postgres (Railway). Если нет — локально падаем на SQLite.
+## Быстрый деплой на Railway
+1) Залей репо на GitHub
+2) Railway → New Project → Deploy from GitHub → выбери репо → Deploy
+3) Railway → Add → PostgreSQL (появится `DATABASE_URL`) → приложение само начнёт использовать Postgres
+
+> Важно: НЕ добавляй Dockerfile и не подключай Vite — фронт статический и отдаётся FastAPI.
 
 ## Локальный запуск
 ```bash
@@ -18,18 +20,23 @@ uvicorn main:app --reload --port 8000
 
 Открой: http://127.0.0.1:8000/
 
-## Railway (быстро)
-1) Залей репозиторий на GitHub
-2) Railway → **New Project** → **Deploy from GitHub** → выбери репо → Deploy ✅  
-   (Railway сам подхватит `railway.toml` и запустит проект)
-
-## Подключить PostgreSQL на Railway
-Railway → **Add** → **PostgreSQL** → после этого в сервис автоматически появится `DATABASE_URL`.  
-Перезапуск не обязателен — но если попросит, сделай Redeploy.
+## Что есть (похоже на TickTick)
+- боковое меню (списки + счётчики)
+- умный список "Сегодня"
+- карточки задач + чекбокс выполнено
+- даты: Сегодня / Завтра / дата
+- группы (Сегодня/Завтра/Позже/Без даты) + сворачивание
+- "Выполнено" отдельной секцией
+- календарь (вкладка) + задачи выбранного дня
+- глобальный поиск (вкладка)
 
 ## API
-- GET    /api/tasks?filter=all|active|completed
-- POST   /api/tasks     { "title": "..." }
-- PATCH  /api/tasks/{id} { "title"?: "...", "completed"?: true/false }
+- GET    /api/lists
+- POST   /api/lists
+- PATCH  /api/lists/{id}
+- DELETE /api/lists/{id}
+
+- GET    /api/tasks?filter=all|active|completed&list_id=...&due=YYYY-MM-DD&q=...
+- POST   /api/tasks
+- PATCH  /api/tasks/{id}
 - DELETE /api/tasks/{id}
-- GET    /api/export
