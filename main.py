@@ -69,6 +69,21 @@ tasks = Table(
 def now_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
 
+def next_sort_order(table: Table, conn=None) -> int:
+    """Return next sort_order (increments by 10)."""
+    close = False
+    if conn is None:
+        conn = engine.connect()
+        close = True
+    try:
+        r = conn.execute(select(table.c.sort_order).order_by(table.c.sort_order.desc())).first()
+    finally:
+        if close:
+            conn.close()
+    cur = int(r[0]) if r and r[0] is not None else 0
+    # Keep room for inserts between items.
+    return cur + 10
+
 def gen_id() -> str:
     return f"{now_ts()}_{os.urandom(4).hex()}"
 
@@ -194,6 +209,10 @@ class FolderCreate(BaseModel):
 class FolderOut(BaseModel):
     id: str; title: str; emoji: str; sortOrder: int
 
+class FolderUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=60)
+    emoji: Optional[str] = Field(default=None, min_length=1, max_length=4)
+
 class ListCreate(BaseModel):
     title: str = Field(min_length=1, max_length=60)
     emoji: str = Field(default="📌", min_length=1, max_length=4)
@@ -201,6 +220,14 @@ class ListCreate(BaseModel):
 
 class ListOut(BaseModel):
     id: str; title: str; emoji: str; sortOrder: int; folderId: Optional[str] = None
+
+class ListUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=60)
+    emoji: Optional[str] = Field(default=None, min_length=1, max_length=4)
+    folderId: Optional[Optional[str]] = None
+
+class ReorderSimple(BaseModel):
+    orderedIds: List[str]
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
@@ -272,9 +299,52 @@ def create_folder(payload: FolderCreate):
     if not title: raise HTTPException(status_code=400, detail="Title is empty")
     fid = gen_id(); emoji = payload.emoji.strip() or "📁"
     with engine.begin() as conn:
-        conn.execute(insert(folders).values(id=fid,title=title,emoji=emoji,sort_order=50,created_at=now_ts()))
+        conn.execute(insert(folders).values(id=fid,title=title,emoji=emoji,sort_order=next_sort_order(folders, conn),created_at=now_ts()))
         row = conn.execute(select(folders).where(folders.c.id==fid)).mappings().first()
     return to_folder_out(row)
+
+@app.patch("/api/folders/{folder_id}", response_model=FolderOut)
+def update_folder(folder_id: str, payload: FolderUpdate):
+    values = {}
+    if payload.title is not None:
+        t = payload.title.strip()
+        if not t:
+            raise HTTPException(status_code=400, detail="Title is empty")
+        values["title"] = t
+    if payload.emoji is not None:
+        e = payload.emoji.strip()
+        if not e:
+            raise HTTPException(status_code=400, detail="Emoji is empty")
+        values["emoji"] = e
+    if not values:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    stmt = update(folders).where(folders.c.id==folder_id).values(**values).returning(folders)
+    with engine.begin() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Folder not found")
+    return to_folder_out(row)
+
+@app.delete("/api/folders/{folder_id}")
+def delete_folder(folder_id: str):
+    """Delete folder; lists stay, but get detached from the folder."""
+    with engine.begin() as conn:
+        conn.execute(update(lists).where(lists.c.folder_id==folder_id).values(folder_id=None))
+        res = conn.execute(delete(folders).where(folders.c.id==folder_id))
+        if res.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Folder not found")
+    return {"deleted": True}
+
+@app.post("/api/folders/reorder")
+def reorder_folders(payload: ReorderSimple):
+    ordered = [x for x in payload.orderedIds if isinstance(x, str) and x.strip()]
+    if not ordered:
+        raise HTTPException(status_code=400, detail="orderedIds required")
+    base = 10
+    with engine.begin() as conn:
+        for i, fid in enumerate(ordered):
+            conn.execute(update(folders).where(folders.c.id==fid).values(sort_order=base + i * 10))
+    return {"ok": True}
 
 @app.get("/api/lists", response_model=List[ListOut])
 def get_lists():
@@ -291,9 +361,59 @@ def create_list(payload: ListCreate):
     folder_id = payload.folderId.strip() if payload.folderId else None
     if folder_id: ensure_folder_exists(folder_id)
     with engine.begin() as conn:
-        conn.execute(insert(lists).values(id=lid,title=title,emoji=emoji,sort_order=50,created_at=now_ts(),folder_id=folder_id))
+        conn.execute(insert(lists).values(id=lid,title=title,emoji=emoji,sort_order=next_sort_order(lists, conn),created_at=now_ts(),folder_id=folder_id))
         row = conn.execute(select(lists).where(lists.c.id==lid)).mappings().first()
     return to_list_out(row)
+
+@app.patch("/api/lists/{list_id}", response_model=ListOut)
+def update_list(list_id: str, payload: ListUpdate):
+    values = {}
+    if payload.title is not None:
+        t = payload.title.strip()
+        if not t:
+            raise HTTPException(status_code=400, detail="Title is empty")
+        values["title"] = t
+    if payload.emoji is not None:
+        e = payload.emoji.strip()
+        if not e:
+            raise HTTPException(status_code=400, detail="Emoji is empty")
+        values["emoji"] = e
+    if payload.folderId is not None:
+        fid = payload.folderId.strip() if payload.folderId else None
+        if fid:
+            ensure_folder_exists(fid)
+        values["folder_id"] = fid
+    if not values:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    stmt = update(lists).where(lists.c.id==list_id).values(**values).returning(lists)
+    with engine.begin() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="List not found")
+    return to_list_out(row)
+
+@app.delete("/api/lists/{list_id}")
+def delete_list(list_id: str):
+    """Delete list; tasks are moved to inbox to avoid data loss."""
+    if list_id == "inbox":
+        raise HTTPException(status_code=400, detail="Cannot delete inbox")
+    with engine.begin() as conn:
+        conn.execute(update(tasks).where(tasks.c.list_id==list_id).values(list_id="inbox", updated_at=now_ts()))
+        res = conn.execute(delete(lists).where(lists.c.id==list_id))
+        if res.rowcount == 0:
+            raise HTTPException(status_code=404, detail="List not found")
+    return {"deleted": True}
+
+@app.post("/api/lists/reorder")
+def reorder_lists(payload: ReorderSimple):
+    ordered = [x for x in payload.orderedIds if isinstance(x, str) and x.strip()]
+    if not ordered:
+        raise HTTPException(status_code=400, detail="orderedIds required")
+    base = 10
+    with engine.begin() as conn:
+        for i, lid in enumerate(ordered):
+            conn.execute(update(lists).where(lists.c.id==lid).values(sort_order=base + i * 10))
+    return {"ok": True}
 
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=None, due: Optional[str]=None,
@@ -407,5 +527,3 @@ FRONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 if os.path.isdir(FRONT_DIR):
     app.mount("/", StaticFiles(directory=FRONT_DIR, html=True), name="frontend")
 
-
-# Migration patch missing; please update init_db.

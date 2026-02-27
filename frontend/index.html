@@ -128,6 +128,76 @@
       <button class="sheet-option ghost" id="pickCancel">Закрыть</button>
     </div>
 
+    <!-- edit list sheet -->
+    <div class="sheet-backdrop" id="editListBackdrop" hidden></div>
+    <div class="sheet" id="editListSheet" hidden>
+      <form id="editListForm" class="sheet-form">
+        <div class="sheet-title">Список</div>
+        <div class="sheet-row"><label class="sheet-label">Эмодзи</label><input id="editListEmoji" class="sheet-emoji" maxlength="4"></div>
+        <div class="sheet-row"><label class="sheet-label">Папка</label><select id="editListFolderSelect" class="sheet-select"><option value="">Без папки</option></select></div>
+        <input id="editListTitle" type="text" placeholder="Название списка…">
+        <div class="sheet-actions">
+          <button type="button" class="btn ghost" id="btnEditListDelete">Удалить</button>
+          <button type="button" class="btn ghost" id="btnEditListCancel">Отмена</button>
+          <button class="btn primary" type="submit">Сохранить</button>
+        </div>
+        <div class="hint" id="editListHint" hidden>Введите название</div>
+      </form>
+    </div>
+
+    <!-- edit folder sheet -->
+    <div class="sheet-backdrop" id="editFolderBackdrop" hidden></div>
+    <div class="sheet" id="editFolderSheet" hidden>
+      <form id="editFolderForm" class="sheet-form">
+        <div class="sheet-title">Папка</div>
+        <div class="sheet-row"><label class="sheet-label">Эмодзи</label><input id="editFolderEmoji" class="sheet-emoji" maxlength="4"></div>
+        <input id="editFolderTitle" type="text" placeholder="Название папки…">
+        <div class="sheet-actions">
+          <button type="button" class="btn ghost" id="btnEditFolderDelete">Удалить</button>
+          <button type="button" class="btn ghost" id="btnEditFolderCancel">Отмена</button>
+          <button class="btn primary" type="submit">Сохранить</button>
+        </div>
+        <div class="hint" id="editFolderHint" hidden>Введите название</div>
+      </form>
+    </div>
+
+    <!-- task sheet -->
+    <div class="sheet-backdrop" id="taskBackdrop" hidden></div>
+    <div class="sheet" id="taskSheet" hidden>
+      <form id="taskForm" class="sheet-form">
+        <div class="sheet-title">Задача</div>
+        <input id="taskTitle" type="text" placeholder="Название…" maxlength="200">
+        <textarea id="taskNotes" class="sheet-textarea" placeholder="Заметки…"></textarea>
+        <div class="sheet-row">
+          <label class="sheet-label">Список</label>
+          <select id="taskListSelect" class="sheet-select"></select>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Дата</label>
+          <input type="date" id="taskDueDate" class="sheet-date" />
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Приоритет</label>
+          <div class="prio" id="taskPrio">
+            <button type="button" class="prio-btn" data-p="0">0</button>
+            <button type="button" class="prio-btn" data-p="1">!</button>
+            <button type="button" class="prio-btn" data-p="2">!!</button>
+            <button type="button" class="prio-btn" data-p="3">!!!</button>
+          </div>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Теги</label>
+          <input id="taskTags" type="text" placeholder="#tag #home" />
+        </div>
+        <div class="sheet-actions">
+          <button type="button" class="btn ghost" id="btnTaskToggle">Готово</button>
+          <button type="button" class="btn ghost" id="btnTaskDelete">Удалить</button>
+          <button type="button" class="btn ghost" id="btnTaskCancel">Отмена</button>
+          <button class="btn primary" type="submit">Сохранить</button>
+        </div>
+      </form>
+    </div>
+
   </div>
 </div>
 

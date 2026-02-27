@@ -1,4 +1,5 @@
 const SETTINGS_KEY="tt.settings.v4";
+const COLLAPSE_KEY="tt.collapse.v1";
 const settings=(()=>{try{return{sort:"due",theme:"auto",...(JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}"))}}catch{return{sort:"due",theme:"auto"}}})();
 const save=()=>localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));
 const $=id=>document.getElementById(id);
@@ -24,15 +25,31 @@ const API_BASE="";
 async function api(path,opt){const r=await fetch(API_BASE+path,opt);if(!r.ok)throw new Error(await r.text());return r.json()}
 const apiGetFolders=()=>api("/api/folders");
 const apiCreateFolder=p=>api("/api/folders",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiPatchFolder=(id,p)=>api("/api/folders/"+encodeURIComponent(id),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiDeleteFolder=id=>api("/api/folders/"+encodeURIComponent(id),{method:"DELETE"});
 const apiGetLists=()=>api("/api/lists");
 const apiCreateList=p=>api("/api/lists",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiPatchList=(id,p)=>api("/api/lists/"+encodeURIComponent(id),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+const apiDeleteList=id=>api("/api/lists/"+encodeURIComponent(id),{method:"DELETE"});
 const apiGetTasks=params=>api("/api/tasks?"+new URLSearchParams(params).toString());
 const apiCreateTask=p=>api("/api/tasks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 const apiPatchTask=(id,p)=>api("/api/tasks/"+encodeURIComponent(id),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 const apiDeleteTask=id=>api("/api/tasks/"+encodeURIComponent(id),{method:"DELETE"});
 const apiReorder=p=>api("/api/tasks/reorder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
 
-const state={activeKind:"smart",activeId:"all",folders:[],lists:[],tasks:[],done:[],collapsed:new Set(),doneCollapsed:true,openSwipeId:null,composer:{listId:"inbox",dueDate:null,priority:0}};
+const _collapse=(()=>{try{return JSON.parse(localStorage.getItem(COLLAPSE_KEY)||"{}")}catch{return{}}})();
+const state={
+  activeKind:"smart",activeId:"all",
+  folders:[],lists:[],
+  tasks:[],done:[],
+  collapsed:new Set(_collapse.groups||[]),
+  folderCollapsed:new Set(_collapse.folders||[]),
+  doneCollapsed:true,
+  openSwipeId:null,
+  editing:{listId:null,folderId:null,taskId:null},
+  composer:{listId:"inbox",dueDate:null,priority:0}
+};
+const saveCollapse=()=>localStorage.setItem(COLLAPSE_KEY,JSON.stringify({groups:[...state.collapsed],folders:[...state.folderCollapsed]}));
 const iso=d=>{const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,"0"),dd=String(d.getDate()).padStart(2,"0");return `${y}-${m}-${dd}`};
 const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x};
 const fmtDue=s=>{if(!s)return"";const t=iso(new Date()),tm=iso(addDays(new Date(),1));if(s===t)return"Сегодня";if(s===tm)return"Завтра";const [y,m,d]=s.split("-");return `${d}.${m}`};
@@ -60,14 +77,62 @@ function setActive(kind,id){
 
 function renderLists(){
   const el=$("listsContainer"); if(!el) return; el.innerHTML="";
-  // no folder grouping for this compact build; just list
+  const folderMap=new Map(state.folders.map(f=>[f.id,f]));
+  const grouped=new Map();
   for(const l of state.lists){
-    const b=document.createElement("button");
-    b.className="drawer-item"; b.dataset.kind="list"; b.dataset.id=l.id;
-    b.innerHTML=`<span class="di-emoji">${l.emoji||"📌"}</span><span class="di-title">${l.title}</span><span class="di-count" data-count="${l.id}">—</span>`;
-    b.addEventListener("click",()=>setActive("list",l.id));
-    el.appendChild(b);
+    const k=l.folderId||"";
+    if(!grouped.has(k)) grouped.set(k,[]);
+    grouped.get(k).push(l);
   }
+  // Sort lists by sortOrder then createdAt fallback (server already orders, but keep stable)
+  for(const [,arr] of grouped) arr.sort((a,b)=> (a.sortOrder||0)-(b.sortOrder||0));
+
+  const renderListItem=(l)=>{
+    const row=document.createElement("div");
+    row.className="drawer-item"; row.dataset.kind="list"; row.dataset.id=l.id;
+    row.setAttribute("role","button"); row.tabIndex=0;
+    row.innerHTML=`<span class="di-emoji">${l.emoji||"📌"}</span><span class="di-title">${l.title}</span><span class="di-count" data-count="${l.id}">—</span><span class="di-more" role="button" tabindex="0" aria-label="Управление">⋯</span>`;
+    row.addEventListener("click",()=>setActive("list",l.id));
+    row.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setActive("list",l.id)}});
+    row.querySelector(".di-more")?.addEventListener("click",(e)=>{e.stopPropagation();openEditList(l.id)});
+    row.querySelector(".di-more")?.addEventListener("keydown",(e)=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();openEditList(l.id)}});
+    return row;
+  };
+
+  const renderFolder=(fid,listsArr)=>{
+    const group=document.createElement("div");
+    group.className="drawer-group";
+    if(fid){
+      const f=folderMap.get(fid);
+      const head=document.createElement("div");
+      head.className="folder-head";
+      head.innerHTML=`<span class="di-emoji">${(f?.emoji)||"📁"}</span><span class="fh-title">${(f?.title)||"Папка"}</span><span class="fh-count" data-folder-count="${fid}">—</span><span class="fh-chevron">${state.folderCollapsed.has(fid)?"▸":"▾"}</span><button class="di-more" type="button" aria-label="Управление">⋯</button>`;
+      head.addEventListener("click",()=>{state.folderCollapsed.has(fid)?state.folderCollapsed.delete(fid):state.folderCollapsed.add(fid);saveCollapse();renderLists();refreshCounts()});
+      head.querySelector(".di-more")?.addEventListener("click",(e)=>{e.stopPropagation();openEditFolder(fid)});
+      group.appendChild(head);
+    } else {
+      const t=document.createElement("div");
+      t.className="drawer-section-title";
+      t.textContent="Без папки";
+      group.appendChild(t);
+    }
+
+    const wrap=document.createElement("div");
+    wrap.className="folder-lists";
+    if(!fid || !state.folderCollapsed.has(fid)){
+      listsArr.forEach(l=>wrap.appendChild(renderListItem(l)));
+    }
+    group.appendChild(wrap);
+    el.appendChild(group);
+  };
+
+  // Render folders (in current server order) then ungrouped.
+  for(const f of state.folders){
+    const arr=grouped.get(f.id);
+    if(arr && arr.length) renderFolder(f.id,arr);
+  }
+  const ungrouped=grouped.get("")||[];
+  if(ungrouped.length) renderFolder("",ungrouped);
 }
 
 function renderFolderSelect(){
@@ -76,8 +141,75 @@ function renderFolderSelect(){
   for(const f of state.folders){const o=document.createElement("option");o.value=f.id;o.textContent=`${f.emoji||"📁"} ${f.title}`;sel.appendChild(o)}
 }
 
+function renderEditListFolderSelect(){
+  const sel=$("editListFolderSelect"); if(!sel) return;
+  sel.innerHTML='<option value="">Без папки</option>';
+  for(const f of state.folders){const o=document.createElement("option");o.value=f.id;o.textContent=`${f.emoji||"📁"} ${f.title}`;sel.appendChild(o)}
+}
+
+function renderTaskListSelect(){
+  const sel=$("taskListSelect"); if(!sel) return;
+  sel.innerHTML="";
+  for(const l of state.lists){
+    const o=document.createElement("option");
+    o.value=l.id;
+    o.textContent=`${l.emoji||"📌"} ${l.title}`;
+    sel.appendChild(o);
+  }
+}
+
 function openSheet(b,s){$(b).hidden=false;$(s).hidden=false}
 function closeSheet(b,s){$(b).hidden=true;$(s).hidden=true}
+
+function openEditList(listId){
+  const l=state.lists.find(x=>x.id===listId); if(!l) return;
+  closeDrawer();
+  state.editing.listId=listId;
+  $("editListHint").hidden=true;
+  $("editListTitle").value=l.title||"";
+  $("editListEmoji").value=(l.emoji||"📌").trim();
+  $("editListFolderSelect").value=l.folderId||"";
+  openSheet("editListBackdrop","editListSheet");
+  $("editListTitle").focus();
+}
+
+function openEditFolder(folderId){
+  const f=state.folders.find(x=>x.id===folderId); if(!f) return;
+  closeDrawer();
+  state.editing.folderId=folderId;
+  $("editFolderHint").hidden=true;
+  $("editFolderTitle").value=f.title||"";
+  $("editFolderEmoji").value=(f.emoji||"📁").trim();
+  openSheet("editFolderBackdrop","editFolderSheet");
+  $("editFolderTitle").focus();
+}
+
+const parseTagsInput=(s)=>{
+  const tags=[];
+  for(const t of (s||"").split(/\s+/)){
+    const tt=t.trim();
+    if(!tt) continue;
+    tags.push(tt.replace(/^#/,""));
+  }
+  // uniq
+  return [...new Set(tags.filter(Boolean))];
+};
+
+function openTask(t){
+  if(!t) return;
+  state.editing.taskId=t.id;
+  $("taskTitle").value=t.title||"";
+  $("taskNotes").value=t.notes||"";
+  $("taskDueDate").value=t.dueDate||"";
+  $("taskTags").value=(t.tags||[]).map(x=>"#"+x).join(" ");
+  $("taskListSelect").value=t.listId||"inbox";
+  // priority buttons
+  document.querySelectorAll("#taskPrio .prio-btn").forEach(b=>b.classList.toggle("active",Number(b.dataset.p)===Number(t.priority||0)));
+  $("btnTaskToggle").textContent=t.completed?"Вернуть":"Готово";
+  $("btnTaskToggle").dataset.completed = t.completed?"1":"0";
+  openSheet("taskBackdrop","taskSheet");
+  $("taskTitle").focus();
+}
 
 function closeOpenSwipe(except=null){
   if(!state.openSwipeId) return;
@@ -164,7 +296,8 @@ function taskRow(t){
   on(del,"click",async(e)=>{e.stopPropagation();if(!confirm("Удалить?"))return;await apiDeleteTask(t.id);closeOpenSwipe();await refreshCounts();await loadTasks()});
   on(cb,"click",async(e)=>{e.stopPropagation();await apiPatchTask(t.id,{completed:!t.completed});await refreshCounts();await loadTasks()});
   on(bD,"click",async(e)=>{e.stopPropagation();if(!confirm("Удалить?"))return;await apiDeleteTask(t.id);await refreshCounts();await loadTasks()});
-  on(bE,"click",(e)=>{e.stopPropagation();const nt=prompt("Изменить",t.title);if(nt===null)return;const val=nt.trim();if(!val)return;apiPatchTask(t.id,{title:val}).then(loadTasks)});
+  on(bE,"click",(e)=>{e.stopPropagation();openTask(t)});
+  on(card,"click",()=>openTask(t));
 
   if(settings.sort==="manual" && state.activeKind==="list" && !t.completed) enableDrag(li,card,t.id);
   return li;
@@ -184,7 +317,9 @@ function render(){
   empty.hidden=!(state.tasks.length===0 && state.done.length===0);
   groupTasks(state.tasks).forEach(g=>{
     const sec=document.createElement("section");
-    const head=document.createElement("div"); head.className="section-head"; head.textContent=g.title;
+    const head=document.createElement("button"); head.className="section-head";
+    head.textContent=`${g.title} ${state.collapsed.has(g.key)?"▸":"▾"}`;
+    head.addEventListener("click",()=>{state.collapsed.has(g.key)?state.collapsed.delete(g.key):state.collapsed.add(g.key);saveCollapse();render()});
     const ul=document.createElement("ul"); ul.className="tasks";
     if(!state.collapsed.has(g.key)) g.items.forEach(t=>ul.appendChild(taskRow(t)));
     sec.appendChild(head); sec.appendChild(ul); groups.appendChild(sec);
@@ -215,18 +350,27 @@ async function loadTasks(){
 
 async function refreshCounts(){
   const today=iso(new Date()), nextTo=iso(addDays(new Date(),6));
-  const [all,todayArr,next7Arr]=await Promise.all([
-    apiGetTasks({filter:"active",sort:"created"}),
-    apiGetTasks({filter:"active",due:today,sort:"created"}),
-    apiGetTasks({filter:"active",due_from:today,due_to:nextTo,sort:"created"})
-  ]);
-  $("countAll").textContent=String(all.length);
-  $("countToday").textContent=String(todayArr.length);
-  $("countNext7").textContent=String(next7Arr.length);
-  for(const l of state.lists){
-    const r=await apiGetTasks({filter:"active",list_id:l.id,sort:"created"});
-    document.querySelector(`[data-count="${l.id}"]`)?.replaceChildren(document.createTextNode(String(r.length)));
+  const all=await apiGetTasks({filter:"active",sort:"created"});
+  const byList={}; const byFolder={};
+  let cToday=0, cNext7=0;
+  for(const t of all){
+    byList[t.listId]=(byList[t.listId]||0)+1;
+    const dd=t.dueDate;
+    if(dd===today) cToday++;
+    if(dd && dd>=today && dd<=nextTo) cNext7++;
   }
+  for(const l of state.lists){
+    const c=byList[l.id]||0;
+    document.querySelector(`[data-count="${l.id}"]`)?.replaceChildren(document.createTextNode(String(c)));
+    if(l.folderId){byFolder[l.folderId]=(byFolder[l.folderId]||0)+c;}
+  }
+  for(const f of state.folders){
+    const c=byFolder[f.id]||0;
+    document.querySelector(`[data-folder-count="${f.id}"]`)?.replaceChildren(document.createTextNode(String(c)));
+  }
+  $("countAll").textContent=String(all.length);
+  $("countToday").textContent=String(cToday);
+  $("countNext7").textContent=String(cNext7);
 }
 
 async function loadMeta(){
@@ -234,6 +378,8 @@ async function loadMeta(){
   state.lists=await apiGetLists();
   renderLists();
   renderFolderSelect();
+  renderEditListFolderSelect();
+  renderTaskListSelect();
 }
 
 function setSort(s){settings.sort=s;save();closeSheet("sortBackdrop","sortSheet");loadTasks()}
@@ -259,14 +405,34 @@ on($("btnListCancel"),"click",()=>closeSheet("listBackdrop","listSheet"));
 on($("listBackdrop"),"click",()=>closeSheet("listBackdrop","listSheet"));
 on($("listForm"),"submit",async(e)=>{e.preventDefault();const title=$("listTitle").value.trim();const emoji=($("listEmoji").value||"📌").trim()||"📌";const folderId=$("folderSelect").value||null;if(!title){$("listHint").hidden=false;return}await apiCreateList({title,emoji,folderId});closeSheet("listBackdrop","listSheet");await loadMeta();await refreshCounts()});
 
+// edit list
+on($("editListBackdrop"),"click",()=>closeSheet("editListBackdrop","editListSheet"));
+on($("btnEditListCancel"),"click",()=>closeSheet("editListBackdrop","editListSheet"));
+on($("editListForm"),"submit",async(e)=>{e.preventDefault();const id=state.editing.listId;const title=$("editListTitle").value.trim();const emoji=($("editListEmoji").value||"📌").trim()||"📌";const folderId=$("editListFolderSelect").value||null;if(!title){$("editListHint").hidden=false;return}await apiPatchList(id,{title,emoji,folderId});closeSheet("editListBackdrop","editListSheet");await loadMeta();await refreshCounts();await loadTasks()});
+on($("btnEditListDelete"),"click",async()=>{const id=state.editing.listId;if(!id) return;if(!confirm("Удалить список? Задачи будут перенесены во 'Входящие'.")) return;await apiDeleteList(id);closeSheet("editListBackdrop","editListSheet");if(state.activeKind==="list" && state.activeId===id) setActive("smart","all"); await loadMeta(); await refreshCounts(); await loadTasks();});
+
 on($("addFolderBtn"),"click",()=>{closeSheet("addBackdrop","addSheet");openSheet("folderBackdrop","folderSheet");$("folderTitle").focus()});
 on($("btnFolderCancel"),"click",()=>closeSheet("folderBackdrop","folderSheet"));
 on($("folderBackdrop"),"click",()=>closeSheet("folderBackdrop","folderSheet"));
 on($("folderForm"),"submit",async(e)=>{e.preventDefault();const title=$("folderTitle").value.trim();const emoji=($("folderEmoji").value||"📁").trim()||"📁";if(!title){$("folderHint").hidden=false;return}await apiCreateFolder({title,emoji});closeSheet("folderBackdrop","folderSheet");await loadMeta();await refreshCounts()});
 
+// edit folder
+on($("editFolderBackdrop"),"click",()=>closeSheet("editFolderBackdrop","editFolderSheet"));
+on($("btnEditFolderCancel"),"click",()=>closeSheet("editFolderBackdrop","editFolderSheet"));
+on($("editFolderForm"),"submit",async(e)=>{e.preventDefault();const id=state.editing.folderId;const title=$("editFolderTitle").value.trim();const emoji=($("editFolderEmoji").value||"📁").trim()||"📁";if(!title){$("editFolderHint").hidden=false;return}await apiPatchFolder(id,{title,emoji});closeSheet("editFolderBackdrop","editFolderSheet");await loadMeta();await refreshCounts()});
+on($("btnEditFolderDelete"),"click",async()=>{const id=state.editing.folderId;if(!id) return;if(!confirm("Удалить папку? Списки останутся, но будут без папки.")) return;await apiDeleteFolder(id);closeSheet("editFolderBackdrop","editFolderSheet");await loadMeta();await refreshCounts();});
+
 on($("compListBtn"),"click",()=>{const pl=$("pickList");pl.innerHTML="";state.lists.forEach(l=>{const btn=document.createElement("button");btn.className="sheet-option";btn.textContent=`${l.emoji} ${l.title}`;btn.onclick=()=>{state.composer.listId=l.id;closeSheet("pickBackdrop","pickSheet")};pl.appendChild(btn)});openSheet("pickBackdrop","pickSheet")});
 on($("pickBackdrop"),"click",()=>closeSheet("pickBackdrop","pickSheet"));
 on($("pickCancel"),"click",()=>closeSheet("pickBackdrop","pickSheet"));
+
+// task sheet
+on($("taskBackdrop"),"click",()=>closeSheet("taskBackdrop","taskSheet"));
+on($("btnTaskCancel"),"click",()=>closeSheet("taskBackdrop","taskSheet"));
+document.querySelectorAll("#taskPrio .prio-btn").forEach(b=>on(b,"click",()=>{document.querySelectorAll("#taskPrio .prio-btn").forEach(x=>x.classList.toggle("active",x===b));}));
+on($("btnTaskDelete"),"click",async()=>{const id=state.editing.taskId;if(!id) return;if(!confirm("Удалить задачу?")) return;await apiDeleteTask(id);closeSheet("taskBackdrop","taskSheet");await refreshCounts();await loadTasks();});
+on($("btnTaskToggle"),"click",async()=>{const id=state.editing.taskId;if(!id) return;const isDone=$("btnTaskToggle").dataset.completed==="1";await apiPatchTask(id,{completed:!isDone});closeSheet("taskBackdrop","taskSheet");await refreshCounts();await loadTasks();});
+on($("taskForm"),"submit",async(e)=>{e.preventDefault();const id=state.editing.taskId;if(!id) return;const title=$("taskTitle").value.trim();if(!title) return;const notes=$("taskNotes").value.trim()||null;const listId=$("taskListSelect").value||"inbox";const dueDate=$("taskDueDate").value||null;const tags=parseTagsInput($("taskTags").value);const prioBtn=[...document.querySelectorAll("#taskPrio .prio-btn")].find(b=>b.classList.contains("active"));const priority=prioBtn?Number(prioBtn.dataset.p):0;await apiPatchTask(id,{title,listId,dueDate,tags,priority,notes});closeSheet("taskBackdrop","taskSheet");await refreshCounts();await loadTasks();});
 
 on($("compDueBtn"),"click",()=>$("compDueDate").click());
 on($("compDueDate"),"change",()=>state.composer.dueDate=$("compDueDate").value||null);
