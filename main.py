@@ -114,17 +114,54 @@ def ensure_columns(table_name: str, required: dict[str, str]) -> None:
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {ddl}"))
 
 def init_db():
+    """
+    Create tables if missing and apply lightweight migrations for older schemas.
+
+    Important (Railway/Postgres):
+    - metadata.create_all() does NOT add missing columns to existing tables.
+    - If you deployed an older version before, Postgres may have an old `tasks` table.
+      We upgrade it in-place (ADD COLUMN) to avoid 500 errors.
+    """
     metadata.create_all(engine)
+
     insp = inspect(engine)
+
+    # lists migrations
     if insp.has_table("lists"):
-        ensure_columns("lists", {"folder_id": "folder_id TEXT"})
+        ensure_columns("lists", {
+            "folder_id": "folder_id TEXT",
+        })
+
+    # tasks migrations (include core columns!)
     if insp.has_table("tasks"):
         ensure_columns("tasks", {
+            # core (must exist)
+            "list_id": "list_id TEXT",
+            "due_date": "due_date TEXT",
+            # new features
             "order_index": "order_index BIGINT",
             "priority": "priority INTEGER NOT NULL DEFAULT 0",
             "notes": "notes TEXT",
             "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",
         })
+
+        # Backfill list_id for old rows (best-effort)
+        with engine.begin() as conn:
+            try:
+                conn.execute(text("UPDATE tasks SET list_id = 'inbox' WHERE list_id IS NULL"))
+            except Exception:
+                pass
+
+            # Ensure defaults/constraints in Postgres (ignore if not supported)
+            try:
+                conn.execute(text("ALTER TABLE tasks ALTER COLUMN list_id SET DEFAULT 'inbox'"))
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE tasks ALTER COLUMN list_id SET NOT NULL"))
+            except Exception:
+                pass
+
 init_db()
 
 def seed_defaults():
