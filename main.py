@@ -369,3 +369,6 @@ def delete_task(task_id: str):
 FRONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 if os.path.isdir(FRONT_DIR):
     app.mount("/", StaticFiles(directory=FRONT_DIR, html=True), name="frontend")
+
+
+# Migration patch missing; please update init_db.
