@@ -58,7 +58,8 @@
 </svg>
 
 <!-- Welcome / Auth (main menu like typical sites) -->
-<div class="welcome" id="welcome" hidden>
+<!-- Default: show welcome, hide app until auth is verified (prevents unauthenticated API calls / flicker) -->
+<div class="welcome" id="welcome">
   <div class="welcome-home" id="welcomeHome">
     <div class="welcome-brand">ClockTime</div>
     <div class="welcome-sub">Планировщик задач</div>
@@ -100,7 +101,7 @@
   </div>
 </div>
 
-<div class="app-shell" id="appShell">
+<div class="app-shell" id="appShell" hidden>
   <!-- mobile backdrop for sidebar -->
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 

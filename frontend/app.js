@@ -4,6 +4,9 @@ const SUMMARY_KEY="tt.summary.html.v1";
 const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
+// Build marker (helps verify Railway deployed the latest bundle)
+console.log("ClockTime build v8");
+
 const settings = (() => {
   try {
     return { sort: "due", theme: "dark", ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")) };
@@ -64,6 +67,7 @@ function setAuth(token, user) {
 
 function logout() {
   setAuth("", null);
+  _started = false;
   showWelcome(true);
 }
 
@@ -119,10 +123,10 @@ const API_BASE = "";
 async function api(path, opt) {
   const o = opt ? { ...opt } : {};
   o.headers = { ...(o.headers || {}) };
-  // Attach token for all protected endpoints (including /api/auth/me).
-  const isAuthRoute = path.startsWith("/api/auth/");
+  // Attach token for every /api/* request except public auth endpoints.
+  // This avoids the "Not authenticated" error on /api/auth/me and makes behavior predictable.
   const isPublicAuth = path === "/api/auth/login" || path === "/api/auth/register";
-  if (path.startsWith("/api/") && auth.token && (!isAuthRoute || !isPublicAuth)) {
+  if (path.startsWith("/api/") && auth.token && !isPublicAuth) {
     o.headers["Authorization"] = "Bearer " + auth.token;
   }
   const r = await fetch(API_BASE + path, o);

@@ -1,10 +1,20 @@
-const CACHE="tt-cache-v7";
+// Bump cache version whenever UI/auth changes so Railway deployments update immediately.
+const CACHE="tt-cache-v8";
 const ASSETS=["/","/index.html","/styles.css","/app.js","/manifest.webmanifest","/icons/icon-192.png","/icons/icon-512.png"];
 self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener("activate",e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.map(k=>k!==CACHE?caches.delete(k):null))).then(()=>self.clients.claim())));
 self.addEventListener("fetch",e=>{
   const u=new URL(e.request.url);
   if(u.pathname.startsWith("/api/")){e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)));return;}
+  // Always prefer network for core app shell assets (prevents stale UI/auth after deploy).
+  if(["/index.html","/app.js","/styles.css","/manifest.webmanifest","/sw.js"].includes(u.pathname)){
+    e.respondWith(fetch(e.request).then(r=>{
+      const copy=r.clone();
+      caches.open(CACHE).then(c=>c.put(e.request,copy)).catch(()=>{});
+      return r;
+    }).catch(()=>caches.match(e.request)));
+    return;
+  }
   // For navigations, try network first (so deployments update UI), then fall back to cache.
   if(e.request.mode==="navigate"){
     e.respondWith(fetch(e.request).then(r=>{
