@@ -102,20 +102,49 @@ def create_token(user_id: str) -> str:
     exp = now_ts() + JWT_TTL_SECONDS
     return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALG)
 
+
+
 def require_user(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     ct_token: str | None = Cookie(default=None, alias=AUTH_COOKIE),
 ) -> dict:
-    # No-auth mode: treat the app as a shared workspace.
-    # We ignore incoming credentials and always use PUBLIC_UID.
-    return {"id": PUBLIC_UID}
+    """Return current user (or a stable guest user).
+
+    - If a valid JWT is present (cookie or Authorization), return that user.
+    - Otherwise return the shared guest workspace user_id=PUBLIC_UID.
+
+    This keeps the app usable without forcing login.
+    """
+    def guest():
+        return {"id": PUBLIC_UID, "email": "guest@local", "created_at": 0}
+
+    token = None
+    if ct_token:
+        token = ct_token
+    elif creds and creds.credentials:
+        token = creds.credentials
+    else:
+        # Fallback header (some proxies strip Authorization)
+        token = request.headers.get("x-auth-token")
+
+    if not token:
+        return guest()
+
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        uid = payload.get("sub")
+        if not uid:
+            return guest()
+    except JWTError:
+        return guest()
 
     with engine.connect() as conn:
         u = conn.execute(select(users).where(users.c.id == uid)).mappings().first()
     if not u:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        return guest()
     return u
+
 
 users = Table(
     "users", metadata,
@@ -350,14 +379,14 @@ def is_first_user(conn) -> bool:
         return True
 
 
-# No-auth: normalize all existing rows to PUBLIC_UID and ensure default lists exist.
+# Guest workspace: attach legacy rows (user_id IS NULL) to PUBLIC_UID and ensure default lists exist.
 with engine.begin() as conn:
     try:
-        conn.execute(update(lists).values(user_id=PUBLIC_UID))
-        conn.execute(update(folders).values(user_id=PUBLIC_UID))
-        conn.execute(update(tasks).values(user_id=PUBLIC_UID))
+        conn.execute(update(lists).where(lists.c.user_id.is_(None)).values(user_id=PUBLIC_UID))
+        conn.execute(update(folders).where(folders.c.user_id.is_(None)).values(user_id=PUBLIC_UID))
+        conn.execute(update(tasks).where(tasks.c.user_id.is_(None)).values(user_id=PUBLIC_UID))
         try:
-            conn.execute(update(sections).values(user_id=PUBLIC_UID))
+            conn.execute(update(sections).where(sections.c.user_id.is_(None)).values(user_id=PUBLIC_UID))
         except Exception:
             pass
     except Exception:

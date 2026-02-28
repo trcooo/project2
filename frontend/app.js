@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v19-ui");
+console.log("ClockTime build v20-ui-auth");
 
 const settings = (() => {
   try {
@@ -123,26 +123,73 @@ function setAuth(token, user) {
   updateAccountUI();
 }
 
+
 function logout(){
-  // no-auth: just reload data
-  _started = false;
-  startApp();
+  // End session (if any) and go back to guest workspace.
+  (async () => {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch (_) {}
+    setAuth("", null);
+    _started = false;
+    await startApp();
+  })();
 }
 
-function showWelcome(){/* no-auth */}
+function openAuth(mode = "login"){
+  const back = $("authBackdrop");
+  const modal = $("authModal");
+  if (!back || !modal) return;
+  back.hidden = false;
+  modal.hidden = false;
 
-function hideWelcome(){/* no-auth */}
+  const isReg = mode === "register";
+  $("tabLogin")?.classList.toggle("active", !isReg);
+  $("tabRegister")?.classList.toggle("active", isReg);
+  $("formLogin") && ($("formLogin").hidden = isReg);
+  $("formRegister") && ($("formRegister").hidden = !isReg);
+  $("loginError") && ($("loginError").hidden = true);
+  $("regError") && ($("regError").hidden = true);
 
-function openAuth(){/* no-auth */}
+  // alt link
+  const alt = $("authAlt");
+  if (alt) {
+    alt.innerHTML = isReg
+      ? 'Уже есть аккаунт? <button class="auth-link" id="authToLogin" type="button">Войти</button>'
+      : 'Нет аккаунта? <button class="auth-link" id="authToRegister" type="button">Зарегистрироваться</button>';
+    setTimeout(() => {
+      $("authToRegister")?.addEventListener("click", () => openAuth("register"));
+      $("authToLogin")?.addEventListener("click", () => openAuth("login"));
+    }, 0);
+  }
+
+  setTimeout(() => {
+    const el = isReg ? $("regEmail") : $("loginEmail");
+    el?.focus?.();
+  }, 0);
+}
+
+function hideWelcome(){
+  // close auth modal
+  $("authBackdrop") && ($("authBackdrop").hidden = true);
+  $("authModal") && ($("authModal").hidden = true);
+}
+
+function showWelcome(){
+  // keep app usable without forcing login
+  openAuth("login");
+}
+
 
 function updateAccountUI() {
   const email = auth.user?.email || "";
-  const initial = email ? email.trim()[0]?.toUpperCase() : "●";
-  if ($("btnAccount")) $("btnAccount").textContent = initial || "●";
-  // settings modal static demo email
-  document.querySelectorAll(".modal-content .muted").forEach((el) => {
-    if (el.textContent === "demo@local" && email) el.textContent = email;
-  });
+  const isGuest = !auth.user || auth.user.id === "public";
+
+  if ($("menuUserLabel")) $("menuUserLabel").textContent = isGuest ? "Гость" : (email || "Аккаунт");
+  if ($("menuLogin")) $("menuLogin").hidden = !isGuest;
+  if ($("menuRegister")) $("menuRegister").hidden = !isGuest;
+  if ($("menuLogout")) $("menuLogout").hidden = isGuest;
+
+  const initial = (email || (isGuest ? "Г" : "●")).trim()[0]?.toUpperCase() || "●";
+  if ($("btnAccount")) $("btnAccount").textContent = initial;
 }
 
 function updateThemeIcon() {
@@ -278,6 +325,8 @@ const state = {
   composer: { listId: null, dueDate: null, priority: 0, sectionId: null },
   system: { inboxId: null },
   calendarCursor: new Date(),
+  calendarView: 'month', // month | week | day
+  calendarDay: null,
   calendarTasks: [],
   calendarRangeKey: "",
   smartDue: null,
@@ -342,6 +391,7 @@ function closeSheet(b, s) { $(b).hidden = true; $(s).hidden = true; }
 // Layout / modules
 function applyLayout() {
   document.body.dataset.module = state.module;
+  document.body.dataset.view = state.view;
 
   // Sidebar behavior
   if (isDesktop()) {
@@ -1485,92 +1535,176 @@ function monthRangeKey(d) {
   return `${d.getFullYear()}-${d.getMonth() + 1}`;
 }
 
+async function ensureCalendarTasksRange(due_from, due_to, key) {
+  if (state.calendarRangeKey === key) return;
+  state.calendarTasks = await apiGetTasks({ filter: 'active', sort: 'due', due_from, due_to });
+  state.calendarRangeKey = key;
+}
+
+
 async function ensureCalendarTasks() {
+  // Month range by default
   const key = monthRangeKey(state.calendarCursor);
   if (state.calendarRangeKey === key) return;
 
   const first = new Date(state.calendarCursor.getFullYear(), state.calendarCursor.getMonth(), 1);
   const last = new Date(state.calendarCursor.getFullYear(), state.calendarCursor.getMonth() + 1, 0);
-
-  const due_from = iso(first);
-  const due_to = iso(last);
-
-  state.calendarTasks = await apiGetTasks({ filter: "active", sort: "due", due_from, due_to });
-  state.calendarRangeKey = key;
+  await ensureCalendarTasksRange(iso(first), iso(last), key);
 }
+
+
 
 async function renderCalendar() {
   if (state.view !== "calendar") return;
-  await ensureCalendarTasks();
-
-  $("pageTitle").textContent = MONTHS_RU[state.calendarCursor.getMonth()];
-  $("calTitle").textContent = MONTHS_RU[state.calendarCursor.getMonth()];
 
   const grid = $("calGrid");
+  if (!grid) return;
   grid.innerHTML = "";
 
-  const year = state.calendarCursor.getFullYear();
-  const month = state.calendarCursor.getMonth();
-
-  const first = new Date(year, month, 1);
-  const start = new Date(first);
-  // week starts Sunday
-  start.setDate(first.getDate() - first.getDay());
-
-  const tasksByDate = new Map();
-  for (const t of state.calendarTasks) {
-    if (!t.dueDate) continue;
-    if (!tasksByDate.has(t.dueDate)) tasksByDate.set(t.dueDate, []);
-    tasksByDate.get(t.dueDate).push(t);
-  }
-
   const todayIso = iso(new Date());
-  for (let i = 0; i < 42; i++) {
-    const day = addDays(start, i);
-    const dayIso = iso(day);
-    const cell = document.createElement("div");
-    cell.className = "cal-cell" + (dayIso === todayIso ? " today" : "");
 
-    const head = document.createElement("div");
-    head.className = "cal-day" + (day.getMonth() !== month ? " muted" : "") + (dayIso === todayIso ? " today" : "");
-    head.textContent = String(day.getDate());
-    cell.appendChild(head);
+  // Decide range by view
+  if (state.calendarView === 'month') {
+    await ensureCalendarTasks();
 
-    const events = document.createElement("div");
-    events.className = "cal-events";
+    const y = state.calendarCursor.getFullYear();
+    const m = state.calendarCursor.getMonth();
+    $("pageTitle").textContent = MONTHS_RU[m];
+    $("calTitle").textContent = `${MONTHS_RU[m]} ${y}`;
+    $("calViewBtn").textContent = 'Месяц ▾';
 
-    const tasks = (tasksByDate.get(dayIso) || []).slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-    const shown = tasks.slice(0, 4);
-    for (const t of shown) {
-      const ev = document.createElement("div");
-      ev.className = "cal-event";
-      const list = state.lists.find((l) => l.id === t.listId);
-      const col = colorForList(t.listId || state.system.inboxId || "inbox");
-      ev.style.borderLeftColor = col;
-      ev.style.background = "rgba(255,255,255,.05)";
-      ev.textContent = t.title;
-      ev.title = `${t.title} (${list?.title || "Входящие"})`;
-      ev.addEventListener("click", (e) => { e.stopPropagation(); openTask(t); });
-      events.appendChild(ev);
+    const first = new Date(y, m, 1);
+    const start = new Date(first);
+    start.setDate(first.getDate() - first.getDay());
+
+    const tasksByDate = new Map();
+    for (const t of state.calendarTasks) {
+      if (!t.dueDate) continue;
+      if (!tasksByDate.has(t.dueDate)) tasksByDate.set(t.dueDate, []); tasksByDate.get(t.dueDate).push(t);
     }
 
-    if (tasks.length > 4) {
-      const more = document.createElement("div");
-      more.className = "cal-more";
-      more.textContent = `ещё ${tasks.length - 4}`;
-      events.appendChild(more);
+    for (let i = 0; i < 42; i++) {
+      const day = addDays(start, i);
+      const dayIso = iso(day);
+      const cell = document.createElement('div');
+      cell.className = 'cal-cell' + (dayIso === todayIso ? ' today' : '');
+
+      const head = document.createElement('div');
+      head.className = 'cal-day' + (day.getMonth() !== m ? ' muted' : '') + (dayIso === todayIso ? ' today' : '');
+      head.textContent = String(day.getDate());
+      cell.appendChild(head);
+
+      const events = document.createElement('div');
+      events.className = 'cal-events';
+
+      const tasks = (tasksByDate.get(dayIso) || []).slice().sort((a,b)=>(a.title||'').localeCompare(b.title||''));
+      for (const t of tasks.slice(0,4)) {
+        const ev = document.createElement('div');
+        ev.className = 'cal-event';
+        const col = colorForList(t.listId || state.system.inboxId || 'inbox');
+        ev.style.borderLeftColor = col;
+        ev.textContent = t.title;
+        ev.addEventListener('click', (e)=>{ e.stopPropagation(); openTask(t); });
+        events.appendChild(ev);
+      }
+      if (tasks.length > 4) {
+        const more = document.createElement('div');
+        more.className = 'cal-more';
+        more.textContent = `ещё ${tasks.length-4}`;
+        events.appendChild(more);
+      }
+
+      cell.appendChild(events);
+      cell.addEventListener('click', ()=>{
+        state.calendarView = 'day';
+        state.calendarCursor = new Date(day);
+        state.calendarRangeKey = '';
+        renderCalendar();
+      });
+      grid.appendChild(cell);
     }
-
-    cell.appendChild(events);
-
-    cell.addEventListener("click", () => {
-      state.smartDue = dayIso;
-      setActive("smart", "day");
-    });
-
-    grid.appendChild(cell);
+    return;
   }
+
+  // Week/day: render 7 columns or one column list
+  const base = state.calendarCursor instanceof Date ? state.calendarCursor : new Date();
+  const start = new Date(base);
+  if (state.calendarView === 'week') {
+    start.setDate(base.getDate() - base.getDay());
+  } else {
+    // day
+    start.setDate(base.getDate());
+  }
+
+  const from = iso(start);
+  const to = iso(state.calendarView === 'week' ? addDays(start, 6) : start);
+  const key = `${state.calendarView}:${from}:${to}`;
+  await ensureCalendarTasksRange(from, to, key);
+
+  if (state.calendarView === 'week') {
+    $("calViewBtn").textContent = 'Неделя ▾';
+    $("pageTitle").textContent = 'Календарь';
+    $("calTitle").textContent = `${fmtDueShort(from)} — ${fmtDueShort(to)}`;
+
+    grid.classList.add('cal-weekview');
+    for (let i=0;i<7;i++) {
+      const day = addDays(start, i);
+      const dayIso = iso(day);
+      const cell = document.createElement('div');
+      cell.className = 'cal-cell' + (dayIso === todayIso ? ' today' : '');
+      const head = document.createElement('div');
+      head.className = 'cal-day' + (dayIso === todayIso ? ' today' : '');
+      head.textContent = `${['Вск','Пон','Втр','Срд','Чтв','Птн','Сбт'][day.getDay()]} ${day.getDate()}`;
+      cell.appendChild(head);
+
+      const events = document.createElement('div');
+      events.className='cal-events';
+      const tasks = state.calendarTasks.filter((t)=>t.dueDate===dayIso);
+      for (const t of tasks.slice(0,6)) {
+        const ev=document.createElement('div');
+        ev.className='cal-event';
+        ev.style.borderLeftColor=colorForList(t.listId||state.system.inboxId||'inbox');
+        ev.textContent=t.title;
+        ev.addEventListener('click',(e)=>{e.stopPropagation();openTask(t);});
+        events.appendChild(ev);
+      }
+      cell.appendChild(events);
+      cell.addEventListener('click', ()=>{ state.calendarView='day'; state.calendarCursor=new Date(day); state.calendarRangeKey=''; renderCalendar(); });
+      grid.appendChild(cell);
+    }
+    return;
+  }
+
+  // day view
+  $("calViewBtn").textContent = 'День ▾';
+  $("pageTitle").textContent = 'Календарь';
+  $("calTitle").textContent = fmtDueLong(from);
+
+  const wrap = document.createElement('div');
+  wrap.style.display='flex';
+  wrap.style.flexDirection='column';
+  wrap.style.gap='10px';
+
+  const tasks = state.calendarTasks.filter((t)=>t.dueDate===from);
+  if (!tasks.length) {
+    const em=document.createElement('div');
+    em.className='empty';
+    em.textContent='Нет задач на этот день';
+    wrap.appendChild(em);
+  } else {
+    for (const t of tasks) {
+      const row = document.createElement('div');
+      row.className='cal-event';
+      row.style.borderLeftColor=colorForList(t.listId||state.system.inboxId||'inbox');
+      row.style.padding='10px 12px';
+      row.textContent=t.title;
+      row.addEventListener('click', ()=>openTask(t));
+      wrap.appendChild(row);
+    }
+  }
+  grid.appendChild(wrap);
 }
+
 
 // Summary
 let _summarySaveTimer = null;
@@ -1698,6 +1832,89 @@ function closeSettings() {
   $("settingsBackdrop").hidden = true;
   $("settingsModal").hidden = true;
 }
+
+function setSettingsTab(label) {
+  const nav = document.querySelectorAll('.modal-nav .mnav-item');
+  nav.forEach((b) => b.classList.toggle('active', (b.textContent||'').trim() === label));
+
+  const box = document.querySelector('.modal-content');
+  if (!box) return;
+
+  const email = auth.user?.email || 'guest@local';
+  const isGuest = !auth.user || auth.user.id === 'public';
+
+  if (label === 'Внешний вид') {
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Внешний вид</h2>
+      <div class="card">
+        <div class="row"><div>Тема</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" id="setThemeDark">Тёмная</button>
+            <button class="btn" id="setThemeLight">Светлая</button>
+            <button class="btn" id="setThemeAuto">Авто</button>
+          </div>
+        </div>
+      </div>
+    `;
+    setTimeout(() => {
+      const cur = settings.theme || 'dark';
+      const setBtnState = () => {
+        $("setThemeDark")?.classList.toggle('primary', cur==='dark');
+      };
+      $("setThemeDark")?.addEventListener('click', () => { settings.theme='dark'; save(); applyTheme(); updateThemeIcon(); setSettingsTab('Внешний вид'); });
+      $("setThemeLight")?.addEventListener('click', () => { settings.theme='light'; save(); applyTheme(); updateThemeIcon(); setSettingsTab('Внешний вид'); });
+      $("setThemeAuto")?.addEventListener('click', () => { settings.theme='auto'; save(); applyTheme(); updateThemeIcon(); setSettingsTab('Внешний вид'); });
+    }, 0);
+    return;
+  }
+
+  if (label === 'Горячие клавиши') {
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Горячие клавиши</h2>
+      <div class="card">
+        <div class="row"><div><b>N</b></div><div class="muted">Добавить задачу</div></div>
+        <div class="row"><div><b>/</b></div><div class="muted">Поиск</div></div>
+        <div class="row"><div><b>Ctrl/Cmd + K</b></div><div class="muted">Поиск</div></div>
+        <div class="row"><div><b>↑/↓</b></div><div class="muted">Навигация по задачам</div></div>
+        <div class="row"><div><b>Enter</b></div><div class="muted">Открыть задачу</div></div>
+        <div class="row"><div><b>Space</b></div><div class="muted">Выполнить/вернуть</div></div>
+        <div class="row"><div><b>Esc</b></div><div class="muted">Закрыть панель/окно</div></div>
+      </div>
+    `;
+    return;
+  }
+
+  if (label === 'О приложении') {
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">О приложении</h2>
+      <div class="card">
+        <div class="row"><div>Версия</div><div class="muted">v20-ui-auth</div></div>
+        <div class="row"><div>Хранилище</div><div class="muted">PostgreSQL (Railway)</div></div>
+      </div>
+    `;
+    return;
+  }
+
+  // Default: Аккаунт
+  box.innerHTML = `
+    <h2 style="margin:0 0 12px;font-weight:950">Аккаунт</h2>
+    <div class="card">
+      <div class="row"><div>Email</div><div class="muted">${email}</div></div>
+      <div class="row"><div>Режим</div><div class="muted">${isGuest ? 'Гость' : 'Авторизован'}</div></div>
+      <div class="row">
+        <div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${isGuest ? '<button class="btn primary" id="settingsLogin">Войти</button>' : '<button class="btn" id="settingsLogout">Выйти</button>'}
+        </div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => {
+    $("settingsLogin")?.addEventListener('click', () => { closeSettings(); openAuth('login'); });
+    $("settingsLogout")?.addEventListener('click', () => { closeSettings(); logout(); });
+  }, 0);
+}
+
 
 // Event bindings
 on($("btnMenu"), "click", openDrawer);
@@ -2028,16 +2245,39 @@ on($("btnAccount"), "click", toggleAccountMenu);
 document.querySelectorAll(".rail-item[data-module]").forEach((b) => on(b, "click", () => setModule(b.dataset.module)));
 on($("btnRailSettings"), "click", openSettings);
 
+
 // account menu actions
+on($("menuLogin"), "click", () => { $("accountMenu").hidden = true; openAuth("login"); });
+on($("menuRegister"), "click", () => { $("accountMenu").hidden = true; openAuth("register"); });
+on($("menuLogout"), "click", () => { $("accountMenu").hidden = true; logout(); });
 on($("menuSettings"), "click", () => { $("accountMenu").hidden = true; openSettings(); });
 on($("menuTheme"), "click", () => { $("accountMenu").hidden = true; toggleTheme(); });
-on($("menuStats"), "click", () => { $("accountMenu").hidden = true; alert("Статистика — заглушка"); });
-on($("menuPremium"), "click", () => { $("accountMenu").hidden = true; alert("Премиум — заглушка"); });
-on($("menuLogout"), "click", () => { $("accountMenu").hidden = true; logout(); });
+on($("menuHotkeys"), "click", () => { $("accountMenu").hidden = true; openSettings(); setSettingsTab("Горячие клавиши"); });
+on($("menuAbout"), "click", () => { $("accountMenu").hidden = true; openSettings(); setSettingsTab("О приложении"); });
 
 // settings modal
+
 on($("settingsBackdrop"), "click", closeSettings);
 on($("settingsClose"), "click", closeSettings);
+
+// settings nav
+document.querySelectorAll('.modal-nav .mnav-item').forEach((b)=>{
+  b.addEventListener('click', ()=>{
+    setSettingsTab((b.textContent||'').trim());
+  });
+});
+
+// initialize default tab when opening
+const _openSettingsOrig = openSettings;
+openSettings = function(){ _openSettingsOrig(); setSettingsTab('Аккаунт'); };
+
+
+
+// auth modal
+on($("authBackdrop"), "click", hideWelcome);
+on($("authClose"), "click", hideWelcome);
+on($("tabLogin"), "click", () => openAuth("login"));
+on($("tabRegister"), "click", () => openAuth("register"));
 
 // keep split editor responsive
 window.addEventListener("resize", () => {
@@ -2049,11 +2289,42 @@ window.addEventListener("resize", () => {
   }
 });
 
+
 // calendar controls
-on($("calPrev"), "click", async () => { state.calendarCursor = new Date(state.calendarCursor.getFullYear(), state.calendarCursor.getMonth() - 1, 1); state.calendarRangeKey = ""; await renderCalendar(); });
-on($("calNext"), "click", async () => { state.calendarCursor = new Date(state.calendarCursor.getFullYear(), state.calendarCursor.getMonth() + 1, 1); state.calendarRangeKey = ""; await renderCalendar(); });
-on($("calToday"), "click", async () => { const now = new Date(); state.calendarCursor = new Date(now.getFullYear(), now.getMonth(), 1); state.calendarRangeKey = ""; await renderCalendar(); });
+function calendarStep(dir){
+  const now = state.calendarDay ? new Date(state.calendarDay) : new Date();
+  if (state.calendarView === 'month') {
+    state.calendarCursor = new Date(state.calendarCursor.getFullYear(), state.calendarCursor.getMonth() + dir, 1);
+  } else if (state.calendarView === 'week') {
+    const base = state.calendarCursor instanceof Date ? state.calendarCursor : new Date();
+    state.calendarCursor = addDays(base, dir * 7);
+  } else {
+    const base = state.calendarCursor instanceof Date ? state.calendarCursor : new Date();
+    state.calendarCursor = addDays(base, dir * 1);
+  }
+  state.calendarRangeKey = '';
+}
+
+on($("calPrev"), "click", async () => { calendarStep(-1); await renderCalendar(); });
+on($("calNext"), "click", async () => { calendarStep(1); await renderCalendar(); });
+on($("calToday"), "click", async () => {
+  const now = new Date();
+  state.calendarCursor = state.calendarView === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1) : now;
+  state.calendarDay = null;
+  state.calendarRangeKey = '';
+  await renderCalendar();
+});
 on($("calAdd"), "click", () => { setModule("tasks"); setActive("smart", "inbox"); $("deskAddInput")?.focus?.(); });
+
+on($("calViewBtn"), "click", () => {
+  const items = [
+    { label: 'Месяц', value: 'month', active: state.calendarView === 'month', onSelect: (v)=>{ state.calendarView=v; state.calendarRangeKey=''; renderCalendar(); }},
+    { label: 'Неделя', value: 'week', active: state.calendarView === 'week', onSelect: (v)=>{ state.calendarView=v; state.calendarRangeKey=''; renderCalendar(); }},
+    { label: 'День', value: 'day', active: state.calendarView === 'day', onSelect: (v)=>{ state.calendarView=v; state.calendarRangeKey=''; renderCalendar(); }},
+  ];
+  openPopover($("calViewBtn"), items, { title: 'Вид', width: 220 });
+});
+
 
 // Resize handler
 window.addEventListener("resize", () => {
@@ -2095,6 +2366,47 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+
+
+// Task list keyboard navigation (desktop-friendly)
+if (state.view === 'tasks' && state.module === 'tasks') {
+  const ids = [...document.querySelectorAll('#groups .task')].map((el) => el.dataset.id).filter(Boolean);
+  if (ids.length) {
+    const cur = state.selectedTaskId;
+    let i = ids.indexOf(cur);
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      i = Math.min(ids.length - 1, i < 0 ? 0 : i + 1);
+      state.selectedTaskId = ids[i];
+      render();
+      if (isSplit()) renderTaskEditor();
+      document.querySelector(`.task[data-id="${state.selectedTaskId}"]`)?.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      i = Math.max(0, i < 0 ? 0 : i - 1);
+      state.selectedTaskId = ids[i];
+      render();
+      if (isSplit()) renderTaskEditor();
+      document.querySelector(`.task[data-id="${state.selectedTaskId}"]`)?.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
+    if (e.key === 'Enter' && state.selectedTaskId) {
+      e.preventDefault();
+      const t = getTaskById(state.selectedTaskId);
+      if (t) openTask(t);
+      return;
+    }
+    if (e.key === ' ' && state.selectedTaskId) {
+      e.preventDefault();
+      const t = getTaskById(state.selectedTaskId);
+      if (t) apiPatchTask(t.id, { completed: !t.completed }).then(() => loadTasks()).catch(() => {});
+      return;
+    }
+  }
+}
   if (e.key === 'Escape') {
     try { closeTaskEditor(); } catch {}
     try { closePopover(); } catch {}
@@ -2222,6 +2534,10 @@ async function startApp() {
   if (_started) return;
   _started = true;
   try {
+    try {
+      const me = await apiAuthMe();
+      if (me) setAuth(auth.token, me);
+    } catch (_) {}
     await loadMeta();
     await refreshCounts();
     setActive("smart", "all");

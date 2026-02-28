@@ -97,12 +97,16 @@
 
   <!-- account menu -->
   <div class="menu" id="accountMenu" hidden>
+    <div class="menu-title" id="menuUserLabel">Гость</div>
+    <button class="menu-item" id="menuLogin">Войти</button>
+    <button class="menu-item" id="menuRegister">Регистрация</button>
+    <button class="menu-item" id="menuLogout" hidden>Выйти</button>
+    <div class="menu-sep"></div>
     <button class="menu-item" id="menuSettings"><svg class="ico sm"><use href="#i-settings"></use></svg> Настройки</button>
     <button class="menu-item" id="menuTheme"><svg class="ico sm" id="themeIcon"><use href="#i-moon"></use></svg> Тема</button>
-    <button class="menu-item" id="menuStats">Статистика</button>
-    <button class="menu-item" id="menuPremium">Премиум</button>
+    <button class="menu-item" id="menuHotkeys">Горячие клавиши</button>
     <div class="menu-sep"></div>
-    <button class="menu-item" id="menuLogout">Сбросить</button>
+    <button class="menu-item" id="menuAbout">О приложении</button>
   </div>
 
   <!-- sidebar -->
@@ -489,7 +493,45 @@
       </form>
     </div>
 
-    <!-- SETTINGS MODAL -->
+    <!-- AUTH MODAL -->
+    <div class="modal-backdrop" id="authBackdrop" hidden></div>
+    <div class="auth-card auth-floating" id="authModal" hidden>
+      <div class="auth-head">
+        <button class="auth-back" id="authClose" aria-label="Закрыть">←</button>
+        <div class="auth-brand">ClockTime</div>
+        <div class="auth-tabs">
+          <button class="auth-tab active" id="tabLogin" type="button">Вход</button>
+          <button class="auth-tab" id="tabRegister" type="button">Регистрация</button>
+        </div>
+      </div>
+
+      <div class="auth-error" id="loginError" hidden></div>
+      <div class="auth-error" id="regError" hidden></div>
+
+      <form id="formLogin" class="auth-form" autocomplete="on">
+        <label class="auth-label">Email</label>
+        <input class="auth-input" id="loginEmail" name="email" type="email" placeholder="you@example.com" required>
+        <label class="auth-label">Пароль</label>
+        <input class="auth-input" id="loginPassword" name="password" type="password" placeholder="••••••••" required>
+        <button class="auth-btn" id="btnLogin" type="submit">Войти</button>
+      </form>
+
+      <form id="formRegister" class="auth-form" autocomplete="on" hidden>
+        <label class="auth-label">Email</label>
+        <input class="auth-input" id="regEmail" name="email" type="email" placeholder="you@example.com" required>
+        <label class="auth-label">Пароль</label>
+        <input class="auth-input" id="regPassword" name="password" type="password" minlength="6" placeholder="минимум 6 символов" required>
+        <label class="auth-label">Повтор пароля</label>
+        <input class="auth-input" id="regPassword2" name="password2" type="password" minlength="6" placeholder="повторите пароль" required>
+        <button class="auth-btn" id="btnRegister" type="submit">Создать аккаунт</button>
+      </form>
+
+      <div class="auth-alt" id="authAlt">
+        Нет аккаунта? <button class="auth-link" id="authToRegister" type="button">Зарегистрироваться</button>
+      </div>
+    </div>
+
+<!-- SETTINGS MODAL -->
     <div class="modal-backdrop" id="settingsBackdrop" hidden></div>
     <div class="modal" id="settingsModal" hidden>
       <div class="modal-head">

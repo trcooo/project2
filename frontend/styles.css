@@ -105,7 +105,7 @@ button,input,select,textarea{font:inherit}
 
 /* Main */
 .main{flex:1;min-width:0;display:flex}
-.container{flex:1;min-width:0;padding:14px 14px 200px}
+.container{flex:1;min-width:0;padding:14px 14px 200px;max-width:1400px;margin:0 auto}
 
 /* Topbar */
 .topbar{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line);background:rgba(0,0,0,.12);backdrop-filter:blur(14px);position:sticky;top:0;z-index:20}
@@ -293,7 +293,7 @@ button,input,select,textarea{font:inherit}
 .link:hover{color:var(--text)}
 
 /* Right panel */
-.rightpanel{width:320px;border-left:1px solid var(--line);background:rgba(0,0,0,.10);padding:12px 12px 18px;display:none;flex-direction:column;gap:12px}
+.rightpanel{width:320px;border-left:1px solid var(--line);background:rgba(0,0,0,.18);padding:12px 12px 18px;display:none;flex-direction:column;gap:12px;position:fixed;right:0;top:56px;bottom:0;overflow:auto;z-index:19;backdrop-filter:blur(14px)}
 .rp-block{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.03);padding:10px 10px}
 .rp-title{font-weight:900;color:rgba(232,232,232,.70);margin-bottom:8px}
 .rp-plus{width:32px;height:32px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);cursor:pointer}
@@ -344,6 +344,8 @@ button,input,select,textarea{font:inherit}
 .menu-item .ico{margin-right:8px;opacity:.9}
 .menu-item:hover{background:rgba(255,255,255,.06)}
 .menu-sep{height:1px;background:var(--line);margin:6px 4px}
+.menu-title{padding:8px 10px 6px;color:rgba(232,232,232,.60);font-weight:900;font-size:12px;letter-spacing:.3px}
+[data-theme=\"light\"] .menu-title{color:rgba(15,23,42,.55)}
 
 /* Popover (anchored menus) */
 .popover{position:fixed;z-index:120;border-radius:14px;background:rgba(24,24,24,.98);border:1px solid var(--line);box-shadow:var(--shadow);padding:8px;backdrop-filter:blur(14px)}
@@ -409,7 +411,8 @@ button,input,select,textarea{font:inherit}
 
   /* Summary right panel */
   .main{gap:0}
-  .rightpanel{display:flex}
+  body[data-view="summary"] .rightpanel{display:flex}
+  body[data-view="summary"] .main{padding-right:320px}
   #rightPanel[hidden]{display:none}
 }
 
@@ -466,3 +469,6 @@ body[data-module="search"] .tb-right{display:none}
 
 
 .sec-dragging{opacity:.65;filter:saturate(.8)}
+
+
+.auth-floating{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:201}
