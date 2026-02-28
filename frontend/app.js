@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v12");
+console.log("ClockTime build v13");
 
 const settings = (() => {
   try {
@@ -68,7 +68,7 @@ function setAuth(token, user) {
 
 function logout() {
   // Best-effort server cookie cleanup (works even if Authorization header is stripped)
-  fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+  fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
   setAuth("", null);
   _started = false;
   showWelcome(true);
@@ -138,6 +138,9 @@ function setAuthBusy(formId, busy, busyText) {
 const API_BASE = "";
 async function api(path, opt) {
   const o = opt ? { ...opt } : {};
+  // Always include cookies. This is harmless for same-origin requests and
+  // fixes cases where PWA / embedded browsers otherwise drop Set-Cookie.
+  if (!o.credentials) o.credentials = "include";
   o.headers = { ...(o.headers || {}) };
   // Attach token for every /api/* request except public auth endpoints.
   // This avoids the "Not authenticated" error on /api/auth/me and makes behavior predictable.
@@ -155,8 +158,9 @@ async function api(path, opt) {
   const raw = await r.text();
 
   if (r.status === 401) {
-    logout();
-    throw new Error("Требуется вход");
+    const err = new Error("Требуется вход");
+    err.code = 401;
+    throw err;
   }
 
   if (!r.ok) {
@@ -169,7 +173,9 @@ async function api(path, opt) {
         // keep raw
       }
     }
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.code = r.status;
+    throw err;
   }
 
   if (r.status === 204) return null;
@@ -204,6 +210,15 @@ const apiCreateTask = (p) => api("/api/tasks", { method: "POST", headers: { "Con
 const apiPatchTask = (id, p) => api("/api/tasks/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiDeleteTask = (id) => api("/api/tasks/" + encodeURIComponent(id), { method: "DELETE" });
 const apiReorder = (p) => api("/api/tasks/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+
+// If any async code forgets to handle auth errors, bring user back to welcome.
+window.addEventListener("unhandledrejection", (ev) => {
+  const e = ev?.reason;
+  if (e && (e.code === 401 || String(e.message || e).toLowerCase().includes("требуется вход"))) {
+    ev.preventDefault?.();
+    logout();
+  }
+});
 
 // Helpers
 const _collapse = (() => {
@@ -1588,7 +1603,11 @@ async function doLogin() {
     const password = $("loginPassword").value;
     const res = await apiAuthLogin({ email, password });
     if (!res || !res.token) throw new Error("Не удалось войти: сервер не вернул токен");
+    // Persist token first, then verify session via /me (catches cases where
+    // Authorization headers/cookies are blocked, so user sees a clear error).
     setAuth(res.token, res.user);
+    const me = await apiAuthMe();
+    setAuth(res.token, me);
     hideWelcome();
     await startApp();
   } catch (err) {
@@ -1613,6 +1632,8 @@ async function doRegister() {
     const res = await apiAuthRegister({ email, password: p1 });
     if (!res || !res.token) throw new Error("Не удалось зарегистрироваться: сервер не вернул токен");
     setAuth(res.token, res.user);
+    const me = await apiAuthMe();
+    setAuth(res.token, me);
     hideWelcome();
     await startApp();
   } catch (err) {
@@ -1660,6 +1681,12 @@ async function startApp() {
     applyLayout();
   } catch (e) {
     _started = false;
+    // If we lost auth, go back to welcome.
+    if (e && (e.code === 401 || String(e.message || e).toLowerCase().includes("вход"))) {
+      setAuth("", null);
+      showWelcome(true);
+      return;
+    }
     alert("Ошибка: " + (e.message || e));
   }
 }

@@ -56,7 +56,8 @@ def _set_auth_cookie(resp: Response, token: str):
         max_age=JWT_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=False,
+        # Railway serves over HTTPS; Secure improves reliability across browsers.
+        secure=True,
         path="/",
     )
 
