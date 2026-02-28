@@ -4,65 +4,199 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Планировщик задач</title>
-  <meta name="theme-color" content="#0b1220" />
+  <meta name="theme-color" content="#141414" />
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-<div class="layout">
+<div class="app-shell" id="appShell">
+  <!-- mobile backdrop for sidebar -->
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
-  <aside class="drawer" id="drawer" hidden>
-    <div class="drawer-top">
-      <div class="user">
-        <div class="avatar">👤</div>
-        <div class="user-meta">
-          <div class="user-name">Мой аккаунт</div>
-          <div class="user-mail">demo@local</div>
-        </div>
-        <div class="user-actions">
-          <button class="drawer-icon" id="btnTheme">🌓</button>
-        </div>
-      </div>
-      <nav class="drawer-nav">
-        <button class="drawer-item active" data-kind="smart" data-id="all"><span class="di-emoji">🗂️</span><span class="di-title">Все</span><span class="di-count" id="countAll">—</span></button>
-        <button class="drawer-item" data-kind="smart" data-id="today"><span class="di-emoji">📅</span><span class="di-title">Сегодня</span><span class="di-count" id="countToday">—</span></button>
-        <button class="drawer-item" data-kind="smart" data-id="next7"><span class="di-emoji">⏳</span><span class="di-title">Следующие 7</span><span class="di-count" id="countNext7">—</span></button>
-        <div class="drawer-sep"></div>
-        <div class="drawer-section-title">Списки</div>
-        <div id="listsContainer"></div>
-      </nav>
+
+  <!-- left rail (desktop) -->
+  <aside class="rail" id="rail">
+    <button class="rail-avatar" id="btnAccount" aria-label="Аккаунт">●</button>
+
+    <div class="rail-items">
+      <button class="rail-item active" data-module="tasks" title="Задачи" aria-label="Задачи">
+        <span class="ri-ico">✓</span>
+      </button>
+      <button class="rail-item" data-module="calendar" title="Календарь" aria-label="Календарь">
+        <span class="ri-ico">▦</span>
+      </button>
+      <button class="rail-item" data-module="search" title="Поиск" aria-label="Поиск">
+        <span class="ri-ico">⌕</span>
+      </button>
     </div>
-    <div class="drawer-bottom">
-      <button class="drawer-add" id="btnAdd">＋ Добавить</button>
+
+    <div class="rail-bottom">
+      <button class="rail-item" id="btnRailSettings" title="Настройки" aria-label="Настройки">
+        <span class="ri-ico">⚙</span>
+      </button>
     </div>
   </aside>
 
+  <!-- account menu -->
+  <div class="menu" id="accountMenu" hidden>
+    <button class="menu-item" id="menuSettings">⚙ Настройки</button>
+    <button class="menu-item" id="menuStats">◷ Статистика</button>
+    <button class="menu-item" id="menuPremium">♛ Премиум</button>
+    <div class="menu-sep"></div>
+    <button class="menu-item" id="menuLogout">⤴ Выйти</button>
+  </div>
+
+  <!-- sidebar -->
+  <aside class="drawer sidebar" id="drawer" hidden>
+    <div class="sidebar-inner">
+      <nav class="drawer-nav">
+        <button class="drawer-item active" data-kind="smart" data-id="all">
+          <span class="di-emoji">🗂</span><span class="di-title">Все</span><span class="di-count" id="countAll">—</span>
+        </button>
+        <button class="drawer-item" data-kind="smart" data-id="today">
+          <span class="di-emoji">📅</span><span class="di-title">Сегодня</span><span class="di-count" id="countToday">—</span>
+        </button>
+        <button class="drawer-item" data-kind="smart" data-id="next7">
+          <span class="di-emoji">⏳</span><span class="di-title">Следующие 7…</span><span class="di-count" id="countNext7">—</span>
+        </button>
+        <button class="drawer-item" data-kind="smart" data-id="inbox">
+          <span class="di-emoji">📥</span><span class="di-title">Входящие</span><span class="di-count" id="countInbox">—</span>
+        </button>
+        <button class="drawer-item" data-kind="smart" data-id="summary">
+          <span class="di-emoji">📝</span><span class="di-title">Сводка</span><span class="di-count"> </span>
+        </button>
+
+        <div class="drawer-sep"></div>
+        <div class="drawer-section-title">Список</div>
+        <div id="listsContainer"></div>
+
+        <div class="drawer-sep"></div>
+        <div class="drawer-section-title">Фильтры</div>
+        <div class="hint-card">
+          Отображение задач, отфильтрованных по списку, дате, приоритету, метке и другим параметрам.
+        </div>
+
+        <div class="drawer-section-title">Метки</div>
+        <div class="hint-card">
+          Категоризуйте свои задачи с помощью меток. Быстро выберите метку, введя “#” при добавлении задачи.
+        </div>
+
+        <div class="drawer-sep"></div>
+        <button class="drawer-item ghost" id="navCompleted" type="button"><span class="di-emoji">☑</span><span class="di-title">Выполнено</span></button>
+        <button class="drawer-item ghost" id="navTrash" type="button"><span class="di-emoji">🗑</span><span class="di-title">Корзина</span></button>
+      </nav>
+
+      <div class="drawer-bottom">
+        <button class="drawer-add" id="btnAdd">＋ Добавить</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- main content -->
   <div class="main">
-    <header class="topbar">
-      <button class="icon-btn" id="btnMenu">☰</button>
-      <div class="title"><div class="title-main" id="pageTitle">Все</div><div class="title-sub" id="pageSub"></div></div>
-      <button class="icon-btn" id="btnSort">⇅</button>
+    <header class="topbar" id="topbar">
+      <div class="tb-left">
+        <button class="icon-btn tb-only-mobile" id="btnMenu" aria-label="Меню">☰</button>
+        <div class="tb-title">
+          <div class="title-main" id="pageTitle">Все</div>
+        </div>
+      </div>
+
+      <div class="tb-center" id="tbCenter">
+        <!-- calendar controls -->
+        <div class="calbar" id="calbar" hidden>
+          <div class="cal-title" id="calTitle">месяц</div>
+          <div class="cal-actions">
+            <button class="cal-btn" id="calAdd" title="Добавить">＋</button>
+            <button class="cal-btn" id="calViewBtn" title="Вид">Месяц ▾</button>
+            <button class="cal-btn" id="calToday" title="Сегодня">Сегодня</button>
+            <button class="cal-btn" id="calPrev" title="Назад">‹</button>
+            <button class="cal-btn" id="calNext" title="Вперёд">›</button>
+            <button class="cal-btn" id="calMore" title="Ещё">⋯</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tb-right" id="tbRight">
+        <button class="icon-btn" id="btnSort" aria-label="Сортировка">⇅</button>
+      </div>
     </header>
 
     <main class="container">
+      <!-- TASKS -->
       <section id="viewTasks" class="view view-active">
-        <div class="search"><span class="search-ico">⌕</span><input id="searchInput" placeholder="Поиск"></div>
+        <div class="desk-addbar" id="deskAddbar">
+          <span class="dab-plus">＋</span>
+          <input id="deskAddInput" placeholder='Добавить задачу в "Входящие"'>
+          <button class="dab-btn" id="deskAddBtn" aria-label="Добавить">⏎</button>
+        </div>
+
+        <div class="search mobile-only">
+          <span class="search-ico">⌕</span>
+          <input id="searchInput" placeholder="Поиск">
+        </div>
+
         <div id="groups"></div>
+
         <button class="section-head muted" id="completedHead">Выполнено <span id="completedCount">0</span> <span id="completedChevron">▾</span></button>
         <ul class="tasks" id="completedTasks"></ul>
         <div class="empty" id="emptyState" hidden>Задач нет</div>
       </section>
 
+      <!-- SEARCH -->
       <section id="viewSearch" class="view">
-        <div class="search big"><span class="search-ico">⌕</span><input id="globalSearchInput" placeholder="Поиск по всем задачам"></div>
+        <div class="search big">
+          <span class="search-ico">⌕</span>
+          <input id="globalSearchInput" placeholder="Поиск по всем задачам">
+        </div>
         <ul class="tasks" id="searchResults"></ul>
         <div class="empty" id="searchEmpty" hidden>Ничего не найдено</div>
       </section>
+
+      <!-- CALENDAR -->
+      <section id="viewCalendar" class="view">
+        <div class="calendar" id="calendar">
+          <div class="cal-head">
+            <div class="cal-week">Вск.</div><div class="cal-week">Пон.</div><div class="cal-week">Втр.</div><div class="cal-week">Срд.</div><div class="cal-week">Чтв.</div><div class="cal-week">Птн.</div><div class="cal-week">Сбт.</div>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+        </div>
+      </section>
+
+      <!-- SUMMARY -->
+      <section id="viewSummary" class="view">
+        <div class="summary">
+          <div class="summary-editor">
+            <div class="editor-toolbar" id="editorToolbar">
+              <button class="tbbtn" data-cmd="formatBlock" data-val="H2">H</button>
+              <button class="tbbtn" data-cmd="bold">B</button>
+              <button class="tbbtn" data-cmd="underline">U</button>
+              <button class="tbbtn" data-cmd="insertUnorderedList">•</button>
+              <button class="tbbtn" data-cmd="insertOrderedList">1.</button>
+              <button class="tbbtn" data-cmd="italic">I</button>
+              <button class="tbbtn" data-cmd="strikeThrough">S</button>
+              <button class="tbbtn" data-action="gen">↻</button>
+              <div class="tbsp"></div>
+              <button class="tbbtn" data-cmd="createLink">⛓</button>
+              <button class="tbbtn" data-cmd="removeFormat">⨯</button>
+            </div>
+
+            <div class="editor-wrap">
+              <div class="editor" id="summaryEditor" contenteditable="true" spellcheck="false"></div>
+            </div>
+
+            <div class="summary-actions">
+              <button class="link" id="summarySaveAs">Сохранить как</button>
+              <button class="link" id="summaryCopy">Копировать</button>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
 
-    <div class="composer">
+    <!-- mobile composer (kept) -->
+    <div class="composer" id="composer">
       <button class="comp-btn" id="compListBtn">🏷️</button>
       <button class="comp-btn" id="compFlagBtn">⚑</button>
       <input class="comp-input" id="compInput" placeholder="Добавить задачу… (#tag !1..3)">
@@ -71,10 +205,38 @@
       <input type="date" id="compDueDate" class="comp-date" />
     </div>
 
-    <nav class="bottom-nav">
+    <!-- mobile bottom nav -->
+    <nav class="bottom-nav" id="bottomNav">
       <button class="bn-item active" data-view="tasks">☑️</button>
       <button class="bn-item" data-view="search">🔎</button>
+      <button class="bn-item" data-view="calendar">📅</button>
     </nav>
+
+    <!-- RIGHT PANEL (summary) -->
+    <aside class="rightpanel" id="rightPanel" hidden>
+      <div class="rp-block">
+        <div class="rp-title">Шаблон</div>
+        <button class="rp-plus">＋</button>
+      </div>
+
+      <div class="rp-block">
+        <div class="rp-title">Фильтр</div>
+        <div class="rp-row"><span>Дата</span><span class="rp-val" id="rpDate">На этой неделе</span></div>
+        <div class="rp-row"><span>Список</span><span class="rp-val" id="rpList">Все списки</span></div>
+        <div class="rp-row"><span>Статус</span><span class="rp-val" id="rpStatus">Все</span></div>
+        <div class="rp-row"><span>Больше</span><span class="rp-val" id="rpMore">Нет</span></div>
+      </div>
+
+      <div class="rp-block">
+        <div class="rp-title">Параметры отображения</div>
+        <div class="rp-row"><span>Группировка</span><span class="rp-val">По статусу</span></div>
+        <div class="rp-row"><span>Поля</span><span class="rp-val">3 выбрано</span></div>
+      </div>
+
+      <div class="rp-block">
+        <div class="rp-row"><span>Задачи на следующий период</span><span class="toggle" aria-label="toggle"><span class="knob"></span></span></div>
+      </div>
+    </aside>
 
     <!-- sort sheet -->
     <div class="sheet-backdrop" id="sortBackdrop" hidden></div>
@@ -196,6 +358,57 @@
           <button class="btn primary" type="submit">Сохранить</button>
         </div>
       </form>
+    </div>
+
+    <!-- SETTINGS MODAL -->
+    <div class="modal-backdrop" id="settingsBackdrop" hidden></div>
+    <div class="modal" id="settingsModal" hidden>
+      <div class="modal-head">
+        <div class="modal-title">Настройки</div>
+        <button class="modal-close" id="settingsClose" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body">
+        <aside class="modal-nav">
+          <button class="mnav-item active">Аккаунт</button>
+          <button class="mnav-item">Премиум</button>
+          <div class="mnav-sep"></div>
+          <button class="mnav-item">Функциональные модули</button>
+          <button class="mnav-item">Умный список</button>
+          <button class="mnav-item">Уведомления</button>
+          <button class="mnav-item">Дата и время</button>
+          <button class="mnav-item">Внешний вид</button>
+          <button class="mnav-item">Больше</button>
+          <div class="mnav-sep"></div>
+          <button class="mnav-item">Интеграции и импорт</button>
+          <button class="mnav-item">Сотрудничество</button>
+          <button class="mnav-item">Горячие клавиши</button>
+          <button class="mnav-item">О приложении</button>
+        </aside>
+        <section class="modal-content">
+          <div class="acc-head">
+            <div class="acc-avatar">👤</div>
+            <div class="acc-note">Установить псевдоним<br><span class="accent">Премиум‑функции</span></div>
+          </div>
+
+          <div class="card">
+            <div class="row"><span>Электронная почта</span><span class="muted">demo@local</span></div>
+            <div class="row"><span>Пароль</span><span class="link">Установить пароль</span></div>
+            <div class="row"><span>Двухфакторная аутентификация</span><span class="link">Настройка</span></div>
+          </div>
+
+          <div class="card">
+            <div class="row"><span>Google</span><span class="link">Связать</span></div>
+            <div class="row"><span>Apple</span><span class="muted">Связано</span></div>
+          </div>
+
+          <div class="card">
+            <div class="row"><span>Входные устройства</span><span class="link">Управлять</span></div>
+            <div class="row"><span>Токен API</span><span class="link">Управлять</span></div>
+            <div class="row"><span>Бекап и восстановление</span><span class="link">Создание бекапа</span> <span class="link">Импортировать резервные копии.</span></div>
+            <div class="row"><span>Управление учетной записью</span><span class="danger">Удалить аккаунт</span></div>
+          </div>
+        </section>
+      </div>
     </div>
 
   </div>
