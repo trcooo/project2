@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v10");
+console.log("ClockTime build v11");
 
 const settings = (() => {
   try {
@@ -117,6 +117,19 @@ function updateThemeIcon() {
   use.setAttribute("href", settings.theme === "light" ? "#i-sun" : "#i-moon");
 }
 updateThemeIcon();
+
+function setAuthBusy(formId, busy, busyText) {
+  const form = $(formId);
+  if (!form) return;
+  form.querySelectorAll("input,button").forEach((el) => {
+    el.disabled = !!busy;
+  });
+  const btn = form.querySelector('button[type="submit"]');
+  if (btn) {
+    if (!btn.dataset.origText) btn.dataset.origText = btn.textContent || "";
+    btn.textContent = busy ? (busyText || "Подождите…") : btn.dataset.origText;
+  }
+}
 
 // API
 const API_BASE = "";
@@ -1558,38 +1571,82 @@ on($("authBack"), "click", () => showWelcome(true));
 on($("tabLogin"), "click", () => switchAuthTab("login"));
 on($("tabRegister"), "click", () => switchAuthTab("register"));
 
-on($("formLogin"), "submit", async (e) => {
-  e.preventDefault();
+// Some environments (PWA wrappers / certain mobile browsers) can be flaky with form submit.
+// We route both `submit` and button `click` through the same functions.
+let _authSubmitting = false;
+
+async function doLogin() {
+  if (_authSubmitting) return;
+  _authSubmitting = true;
   $("loginError").hidden = true;
+  setAuthBusy("formLogin", true, "Входим…");
   try {
     const email = $("loginEmail").value.trim();
     const password = $("loginPassword").value;
     const res = await apiAuthLogin({ email, password });
+    if (!res || !res.token) throw new Error("Не удалось войти: сервер не вернул токен");
     setAuth(res.token, res.user);
     hideWelcome();
-    await startApp();
+    try { await startApp(); } catch {}
+    // Hard reload ensures we always end up in the authenticated app shell.
+    setTimeout(() => location.replace("/"), 60);
   } catch (err) {
-    $("loginError").textContent = err.message || String(err);
+    $("loginError").textContent = err?.message || String(err);
     $("loginError").hidden = false;
+  } finally {
+    setAuthBusy("formLogin", false);
+    _authSubmitting = false;
   }
-});
+}
 
-on($("formRegister"), "submit", async (e) => {
-  e.preventDefault();
+async function doRegister() {
+  if (_authSubmitting) return;
+  _authSubmitting = true;
   $("regError").hidden = true;
+  setAuthBusy("formRegister", true, "Создаём…");
   try {
     const email = $("regEmail").value.trim();
     const p1 = $("regPassword").value;
     const p2 = $("regPassword2").value;
     if (p1 !== p2) throw new Error("Пароли не совпадают");
     const res = await apiAuthRegister({ email, password: p1 });
+    if (!res || !res.token) throw new Error("Не удалось зарегистрироваться: сервер не вернул токен");
     setAuth(res.token, res.user);
     hideWelcome();
-    await startApp();
+    try { await startApp(); } catch {}
+    setTimeout(() => location.replace("/"), 60);
   } catch (err) {
-    $("regError").textContent = err.message || String(err);
+    $("regError").textContent = err?.message || String(err);
     $("regError").hidden = false;
+  } finally {
+    setAuthBusy("formRegister", false);
+    _authSubmitting = false;
   }
+}
+
+on($("formLogin"), "submit", async (e) => {
+  e.preventDefault();
+  await doLogin();
+});
+
+on($("formRegister"), "submit", async (e) => {
+  e.preventDefault();
+  await doRegister();
+});
+
+// Direct button click handlers as a fallback (some browsers/extensions mess with submit events)
+on($("btnLogin"), "click", (e) => {
+  // If native validation fails, show it instead of silently doing nothing.
+  const f = $("formLogin");
+  if (f && !f.checkValidity()) { f.reportValidity(); return; }
+  e.preventDefault();
+  doLogin();
+});
+on($("btnRegister"), "click", (e) => {
+  const f = $("formRegister");
+  if (f && !f.checkValidity()) { f.reportValidity(); return; }
+  e.preventDefault();
+  doRegister();
 });
 
 let _started = false;
