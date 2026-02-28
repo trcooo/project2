@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v13");
+console.log("ClockTime build v14");
 
 const settings = (() => {
   try {
@@ -71,20 +71,15 @@ function logout() {
   fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
   setAuth("", null);
   _started = false;
-  showWelcome(true);
+  showWelcome("login");
 }
 
-function showWelcome(home = true) {
+function showWelcome(mode = "login") {
   const w = $("welcome");
   const app = $("appShell");
   if (w) w.hidden = false;
   if (app) app.hidden = true;
-
-  // switch between home (main menu) and forms
-  const homeEl = $("welcomeHome");
-  const card = $("authCard");
-  if (homeEl) homeEl.hidden = !home;
-  if (card) card.hidden = home;
+  switchAuthMode(mode);
 }
 
 function hideWelcome() {
@@ -95,9 +90,7 @@ function hideWelcome() {
 }
 
 function openAuth(mode) {
-  showWelcome(false);
-  switchAuthTab(mode);
-  // focus first field
+  showWelcome(mode);
   setTimeout(() => {
     if (mode === "register") $("regEmail")?.focus?.();
     else $("loginEmail")?.focus?.();
@@ -147,6 +140,8 @@ async function api(path, opt) {
   const isPublicAuth = path === "/api/auth/login" || path === "/api/auth/register";
   if (path.startsWith("/api/") && auth.token && !isPublicAuth) {
     o.headers["Authorization"] = "Bearer " + auth.token;
+    // Fallback for hosts/proxies that may strip Authorization.
+    o.headers["X-Auth-Token"] = auth.token;
   }
   const r = await fetch(API_BASE + path, o);
 
@@ -1562,32 +1557,33 @@ window.addEventListener("resize", () => {
 });
 
 // Auth UI
-function switchAuthTab(which) {
-  const isLogin = which === "login";
-  $("tabLogin")?.classList.toggle("active", isLogin);
-  $("tabRegister")?.classList.toggle("active", !isLogin);
-  // Be explicit: some browsers/extensions can behave oddly with [hidden] + flex.
-  // We set both the attribute AND inline display to guarantee only one form is visible.
+let _authMode = "login"; // login | register
+
+function switchAuthMode(mode) {
+  _authMode = mode === "register" ? "register" : "login";
+  const isLogin = _authMode === "login";
+  // Be explicit: set both [hidden] and display.
   const fl = $("formLogin");
   const fr = $("formRegister");
-  if (fl) {
-    fl.hidden = !isLogin;
-    fl.style.display = isLogin ? "flex" : "none";
-  }
-  if (fr) {
-    fr.hidden = isLogin;
-    fr.style.display = isLogin ? "none" : "flex";
-  }
-  $("loginError").hidden = true;
-  $("regError").hidden = true;
+  if (fl) { fl.hidden = !isLogin; fl.style.display = isLogin ? "flex" : "none"; }
+  if (fr) { fr.hidden = isLogin; fr.style.display = isLogin ? "none" : "flex"; }
+  $("loginError") && ($("loginError").hidden = true);
+  $("regError") && ($("regError").hidden = true);
+
+  const t = $("btnAuthToggle");
+  if (t) t.textContent = isLogin ? "Регистрация" : "Вход";
 }
 
-on($("welcomeGoLogin"), "click", () => openAuth("login"));
-on($("welcomeGoRegister"), "click", () => openAuth("register"));
-on($("authBack"), "click", () => showWelcome(true));
+on($("btnAuthToggle"), "click", () => {
+  switchAuthMode(_authMode === "login" ? "register" : "login");
+  setTimeout(() => {
+    if (_authMode === "register") $("regEmail")?.focus?.();
+    else $("loginEmail")?.focus?.();
+  }, 0);
+});
 
-on($("tabLogin"), "click", () => switchAuthTab("login"));
-on($("tabRegister"), "click", () => switchAuthTab("register"));
+on($("linkToRegister"), "click", () => switchAuthMode("register"));
+on($("linkToLogin"), "click", () => switchAuthMode("login"));
 
 // Some environments (PWA wrappers / certain mobile browsers) can be flaky with form submit.
 // We route both `submit` and button `click` through the same functions.
@@ -1684,7 +1680,12 @@ async function startApp() {
     // If we lost auth, go back to welcome.
     if (e && (e.code === 401 || String(e.message || e).toLowerCase().includes("вход"))) {
       setAuth("", null);
-      showWelcome(true);
+      showWelcome("login");
+      const msg = "Сессия не установлена. Попробуйте войти ещё раз.";
+      if ($("loginError")) {
+        $("loginError").textContent = msg;
+        $("loginError").hidden = false;
+      }
       return;
     }
     alert("Ошибка: " + (e.message || e));
@@ -1703,6 +1704,8 @@ async function startApp() {
     hideWelcome();
     await startApp();
   } catch {
-    showWelcome(true);
+    // If the stored token is invalid/expired, clear it.
+    setAuth("", null);
+    showWelcome("login");
   }
 })();

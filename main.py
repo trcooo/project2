@@ -3,7 +3,7 @@ import os, json
 from datetime import datetime, timezone, date
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, HTTPException, Depends, status, Response, Cookie
+from fastapi import FastAPI, HTTPException, Depends, status, Response, Cookie, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -103,12 +103,17 @@ def create_token(user_id: str) -> str:
     return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALG)
 
 def require_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     ct_token: str | None = Cookie(default=None, alias=AUTH_COOKIE),
 ) -> dict:
     token = None
     if creds and creds.credentials:
         token = creds.credentials
+    # Some hosting/proxy layers may strip the Authorization header.
+    # Accept a custom header as a reliable fallback.
+    elif request.headers.get("x-auth-token"):
+        token = request.headers.get("x-auth-token")
     elif ct_token:
         token = ct_token
     if not token:
