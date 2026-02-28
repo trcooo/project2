@@ -64,16 +64,37 @@ function setAuth(token, user) {
 
 function logout() {
   setAuth("", null);
-  showAuth();
+  showWelcome(true);
 }
 
-function showAuth() {
-  $("auth").hidden = false;
-  $("appShell").style.filter = "blur(6px)";
+function showWelcome(home = true) {
+  const w = $("welcome");
+  const app = $("appShell");
+  if (w) w.hidden = false;
+  if (app) app.hidden = true;
+
+  // switch between home (main menu) and forms
+  const homeEl = $("welcomeHome");
+  const card = $("authCard");
+  if (homeEl) homeEl.hidden = !home;
+  if (card) card.hidden = home;
 }
-function hideAuth() {
-  $("auth").hidden = true;
-  $("appShell").style.filter = "";
+
+function hideWelcome() {
+  const w = $("welcome");
+  const app = $("appShell");
+  if (w) w.hidden = true;
+  if (app) app.hidden = false;
+}
+
+function openAuth(mode) {
+  showWelcome(false);
+  switchAuthTab(mode);
+  // focus first field
+  setTimeout(() => {
+    if (mode === "register") $("regEmail")?.focus?.();
+    else $("loginEmail")?.focus?.();
+  }, 0);
 }
 
 function updateAccountUI() {
@@ -98,7 +119,10 @@ const API_BASE = "";
 async function api(path, opt) {
   const o = opt ? { ...opt } : {};
   o.headers = { ...(o.headers || {}) };
-  if (path.startsWith("/api/") && !path.startsWith("/api/auth/") && auth.token) {
+  // Attach token for all protected endpoints (including /api/auth/me).
+  const isAuthRoute = path.startsWith("/api/auth/");
+  const isPublicAuth = path === "/api/auth/login" || path === "/api/auth/register";
+  if (path.startsWith("/api/") && auth.token && (!isAuthRoute || !isPublicAuth)) {
     o.headers["Authorization"] = "Bearer " + auth.token;
   }
   const r = await fetch(API_BASE + path, o);
@@ -337,7 +361,9 @@ function updateAddPlaceholder() {
   const list = state.lists.find((l) => l.id === listId);
   const name = list?.title || "Входящие";
   const el = $("deskAddInput");
-  if (el) el.placeholder = `Добавить задачу в "${name}"`;
+  if (el) el.placeholder = "+ Добавить задачу";
+  const lb = $("deskListBtn");
+  if (lb) lb.title = name;
 }
 
 function setActive(kind, id) {
@@ -977,8 +1003,7 @@ async function addTask() {
 async function addTaskDesktop() {
   const raw = $("deskAddInput").value.trim();
   if (!raw) return;
-  const inboxId = state.system.inboxId;
-  await addTaskFromRaw(raw, state.activeKind === "list" ? state.activeId : (state.activeId === "inbox" ? inboxId : inboxId));
+  await addTaskFromRaw(raw);
   $("deskAddInput").value = "";
 }
 
@@ -1413,6 +1438,11 @@ on($("compInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault
 
 on($("deskAddBtn"), "click", addTaskDesktop);
 on($("deskAddInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addTaskDesktop(); } });
+on($("deskDueBtn"), "click", () => $("deskDueDate")?.click?.());
+on($("deskDueDate"), "change", () => {
+  state.composer.dueDate = $("deskDueDate").value || null;
+});
+on($("deskListBtn"), "click", () => $("compListBtn")?.click?.());
 on($("paneAdd"), "click", () => $("deskAddInput")?.focus());
 on($("newSectionBtn"), "click", () => alert("Секции — в разработке"));
 
@@ -1486,6 +1516,11 @@ function switchAuthTab(which) {
   $("loginError").hidden = true;
   $("regError").hidden = true;
 }
+
+on($("welcomeGoLogin"), "click", () => openAuth("login"));
+on($("welcomeGoRegister"), "click", () => openAuth("register"));
+on($("authBack"), "click", () => showWelcome(true));
+
 on($("tabLogin"), "click", () => switchAuthTab("login"));
 on($("tabRegister"), "click", () => switchAuthTab("register"));
 
@@ -1497,7 +1532,7 @@ on($("formLogin"), "submit", async (e) => {
     const password = $("loginPassword").value;
     const res = await apiAuthLogin({ email, password });
     setAuth(res.token, res.user);
-    hideAuth();
+    hideWelcome();
     await startApp();
   } catch (err) {
     $("loginError").textContent = err.message || String(err);
@@ -1515,7 +1550,7 @@ on($("formRegister"), "submit", async (e) => {
     if (p1 !== p2) throw new Error("Пароли не совпадают");
     const res = await apiAuthRegister({ email, password: p1 });
     setAuth(res.token, res.user);
-    hideAuth();
+    hideWelcome();
     await startApp();
   } catch (err) {
     $("regError").textContent = err.message || String(err);
@@ -1538,18 +1573,17 @@ async function startApp() {
   }
 }
 
-// Boot (requires auth)
+// Boot
 (async () => {
   try {
     if (!auth.token) {
-      showAuth();
-      switchAuthTab("login");
+      showWelcome(true);
       return;
     }
     // validate token
     const me = await apiAuthMe();
     setAuth(auth.token, me);
-    hideAuth();
+    hideWelcome();
     await startApp();
   } catch {
     logout();

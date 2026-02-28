@@ -57,11 +57,21 @@
   </symbol>
 </svg>
 
-<!-- Auth overlay -->
-<div class="auth" id="auth" hidden>
-  <div class="auth-card">
+<!-- Welcome / Auth (main menu like typical sites) -->
+<div class="welcome" id="welcome" hidden>
+  <div class="welcome-home" id="welcomeHome">
+    <div class="welcome-brand">ClockTime</div>
+    <div class="welcome-sub">Планировщик задач</div>
+    <div class="welcome-actions">
+      <button class="welcome-btn" id="welcomeGoLogin" type="button">Войти</button>
+      <button class="welcome-btn primary" id="welcomeGoRegister" type="button">Регистрация</button>
+    </div>
+  </div>
+
+  <div class="auth-card" id="authCard" hidden>
     <div class="auth-head">
-      <div class="auth-brand">Планировщик</div>
+      <button class="auth-back" id="authBack" type="button" aria-label="Назад">←</button>
+      <div class="auth-brand">ClockTime</div>
       <div class="auth-tabs">
         <button class="auth-tab active" id="tabLogin" type="button">Вход</button>
         <button class="auth-tab" id="tabRegister" type="button">Регистрация</button>
@@ -226,8 +236,13 @@
 
         <div class="desk-addbar" id="deskAddbar">
           <span class="dab-plus">＋</span>
-          <input id="deskAddInput" placeholder='Добавить задачу в "Входящие"'>
+          <input id="deskAddInput" placeholder='+ Добавить задачу'>
+          <button class="dab-icon" id="deskDueBtn" type="button" aria-label="Дата">
+            <svg class="ico sm"><use href="#i-calendar"></use></svg>
+          </button>
+          <button class="dab-icon" id="deskListBtn" type="button" aria-label="Список">▾</button>
           <button class="dab-btn" id="deskAddBtn" aria-label="Добавить">⏎</button>
+          <input type="date" id="deskDueDate" class="dab-date" />
         </div>
 
         <div class="search mobile-only">
