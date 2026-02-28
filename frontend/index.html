@@ -243,6 +243,11 @@
                 <span id="teListText">Входящие</span>
               </button>
 
+              <button class="te-pill" id="teSectionBtn" type="button" title="Секция">
+                <svg class="ico sm"><use href="#i-list"></use></svg>
+                <span id="teSectionText">несгруппированный</span>
+              </button>
+
               <div class="te-actions">
                 <button class="icon-btn" id="tePriority" title="Приоритет" aria-label="Приоритет"><svg class="ico sm"><use href="#i-flag"></use></svg></button>
                 <button class="icon-btn" id="teTags" title="Теги" aria-label="Теги"><svg class="ico sm"><use href="#i-tag"></use></svg></button>
@@ -444,6 +449,10 @@
         <div class="sheet-row">
           <label class="sheet-label">Список</label>
           <select id="taskListSelect" class="sheet-select"></select>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Секция</label>
+          <select id="taskSectionSelect" class="sheet-select"></select>
         </div>
         <div class="sheet-row">
           <label class="sheet-label">Дата</label>

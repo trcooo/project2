@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v16-noauth");
+console.log("ClockTime build v17-ui");
 
 const settings = (() => {
   try {
@@ -167,6 +167,12 @@ const apiCreateList = (p) => api("/api/lists", { method: "POST", headers: { "Con
 const apiPatchList = (id, p) => api("/api/lists/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiDeleteList = (id) => api("/api/lists/" + encodeURIComponent(id), { method: "DELETE" });
 
+const apiGetSections = (params) => api("/api/sections?" + new URLSearchParams(params).toString());
+const apiCreateSection = (p) => api("/api/sections", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+const apiPatchSection = (id, p) => api("/api/sections/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+const apiDeleteSection = (id) => api("/api/sections/" + encodeURIComponent(id), { method: "DELETE" });
+const apiReorderSections = (p) => api("/api/sections/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+
 const apiGetTasks = (params) => api("/api/tasks?" + new URLSearchParams(params).toString());
 const apiCreateTask = (p) => api("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiPatchTask = (id, p) => api("/api/tasks/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
@@ -194,22 +200,28 @@ const state = {
   activeId: "all",
   folders: [],
   lists: [],
+  sections: [],
+  sectionsCache: {},
   tasks: [],
   done: [],
   collapsed: new Set(_collapse.groups || []),
   folderCollapsed: new Set(_collapse.folders || []),
+  sectionCollapsed: new Set(_collapse.sections || []),
   doneCollapsed: true,
   openSwipeId: null,
   selectedTaskId: null,
+  draggingTask: null,
+  draggingSectionId: null,
   editing: { listId: null, folderId: null, taskId: null },
   composer: { listId: null, dueDate: null, priority: 0 },
   system: { inboxId: null },
   calendarCursor: new Date(),
   calendarTasks: [],
   calendarRangeKey: "",
+  smartDue: null,
 };
 
-const saveCollapse = () => localStorage.setItem(COLLAPSE_KEY, JSON.stringify({ groups: [...state.collapsed], folders: [...state.folderCollapsed] }));
+const saveCollapse = () => localStorage.setItem(COLLAPSE_KEY, JSON.stringify({ groups: [...state.collapsed], folders: [...state.folderCollapsed], sections: [...state.sectionCollapsed] }));
 const iso = (d) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -365,6 +377,7 @@ function updatePageTitle() {
     else if (state.activeId === "today") $("pageTitle").textContent = "Сегодня";
     else if (state.activeId === "next7") $("pageTitle").textContent = "Следующие 7";
     else if (state.activeId === "inbox") $("pageTitle").textContent = "Входящие";
+    else if (state.activeId === "day" && state.smartDue) $("pageTitle").textContent = fmtDueLong(state.smartDue);
     else $("pageTitle").textContent = "Все";
     return;
   }
@@ -513,6 +526,36 @@ function renderTaskListSelect() {
   }
 }
 
+async function ensureSectionsForList(listId) {
+  const lid = (listId || '').trim();
+  if (!lid) return [];
+  if (state.sectionsCache[lid]) return state.sectionsCache[lid];
+  try {
+    const secs = await apiGetSections({ list_id: lid });
+    state.sectionsCache[lid] = secs || [];
+    return state.sectionsCache[lid];
+  } catch {
+    state.sectionsCache[lid] = [];
+    return [];
+  }
+}
+
+function fillSectionSelect(selectEl, sectionsArr, selectedId) {
+  if (!selectEl) return;
+  selectEl.innerHTML = '';
+  const opt0 = document.createElement('option');
+  opt0.value = '';
+  opt0.textContent = 'несгруппированный';
+  selectEl.appendChild(opt0);
+  (sectionsArr || []).forEach((s) => {
+    const o = document.createElement('option');
+    o.value = s.id;
+    o.textContent = s.title;
+    selectEl.appendChild(o);
+  });
+  selectEl.value = selectedId || '';
+}
+
 // Edit list/folder sheets
 function openEditList(listId) {
   const l = state.lists.find((x) => x.id === listId);
@@ -600,8 +643,15 @@ function attachSwipe(card, t) {
 function enableDrag(li, card, id) {
   if (!isDesktop()) return;
   card.draggable = true;
-  on(card, "dragstart", (e) => { li.classList.add("dragging"); e.dataTransfer.setData("text/plain", id); e.dataTransfer.effectAllowed = "move"; });
-  on(card, "dragend", () => li.classList.remove("dragging"));
+  on(card, "dragstart", (e) => {
+    li.classList.add("dragging");
+    const wrap = li.closest('[data-section-wrap]');
+    const sec = wrap ? (wrap.dataset.section || '') : '';
+    state.draggingTask = { id, fromSection: sec };
+    e.dataTransfer.setData("text/plain", id);
+    e.dataTransfer.effectAllowed = "move";
+  });
+  on(card, "dragend", () => { li.classList.remove("dragging"); state.draggingTask = null; });
 }
 
 function getAfter(container, y) {
@@ -615,26 +665,79 @@ function getAfter(container, y) {
   return best.el;
 }
 
-async function persistOrder() {
-  if (!(settings.sort === "manual" && state.activeKind === "list")) return;
-  const ids = [...document.querySelectorAll("#groups .task")].map((x) => x.dataset.id).filter(Boolean);
-  if (!ids.length) return;
-  await apiReorder({ listId: state.activeId, orderedIds: ids });
-  await loadTasks();
+function getAfterSection(container, y) {
+  const els = [...container.querySelectorAll('section[data-section-wrap]')].filter((el) => !el.classList.contains('sec-dragging'));
+  let best = { o: -1e9, el: null };
+  for (const el of els) {
+    const b = el.getBoundingClientRect();
+    const off = y - b.top - b.height / 2;
+    if (off < 0 && off > best.o) best = { o: off, el };
+  }
+  return best.el;
 }
+
+function setupSectionDrop() {
+  if (!(settings.sort === 'manual' && state.activeKind === 'list')) return;
+  const groups = $('groups');
+  if (!groups) return;
+  on(groups, 'dragover', (e) => {
+    if (!state.draggingSectionId) return;
+    e.preventDefault();
+    const drag = document.querySelector('section.sec-dragging');
+    if (!drag) return;
+    const after = getAfterSection(groups, e.clientY);
+    if (!after) groups.appendChild(drag);
+    else groups.insertBefore(drag, after);
+  });
+
+  on(groups, 'drop', async (e) => {
+    if (!state.draggingSectionId) return;
+    e.preventDefault();
+    const ids = [...groups.querySelectorAll('section[data-section-wrap]')].map((sec) => sec.dataset.section).filter((id) => id);
+    if (ids.length) {
+      try { await apiReorderSections({ orderedIds: ids }); } catch (_) {}
+      await loadTasks();
+    }
+    state.draggingSectionId = null;
+  });
+}
+
+async function persistOrder(sectionId) {
+  if (!(settings.sort === "manual" && state.activeKind === "list")) return;
+  const sid = sectionId || "";
+  const ul = [...document.querySelectorAll('#groups .tasks')].find((u) => (u.dataset.section || '') === sid);
+  const ids = ul ? [...ul.querySelectorAll('.task')].map((x) => x.dataset.id).filter(Boolean) : [];
+  if (!ids.length) return;
+  await apiReorder({ listId: state.activeId, sectionId: sid ? sid : null, orderedIds: ids });
+}
+
 
 function setupDrop() {
   if (!(settings.sort === "manual" && state.activeKind === "list")) return;
-  document.querySelectorAll("#groups .tasks").forEach((ul) => {
-    on(ul, "dragover", (e) => {
+  document.querySelectorAll('#groups .tasks').forEach((ul) => {
+    on(ul, 'dragover', (e) => {
       e.preventDefault();
-      const drag = document.querySelector(".task.dragging");
+      const drag = document.querySelector('.task.dragging');
       if (!drag) return;
       const after = getAfter(ul, e.clientY);
       if (!after) ul.appendChild(drag);
       else ul.insertBefore(drag, after);
     });
-    on(ul, "drop", (e) => { e.preventDefault(); persistOrder(); });
+
+    on(ul, 'drop', async (e) => {
+      e.preventDefault();
+      const sid = ul.dataset.section || '';
+      const info = state.draggingTask;
+      const draggedId = info?.id || e.dataTransfer.getData('text/plain');
+      const from = info?.fromSection || '';
+
+      if (draggedId && from !== sid) {
+        try { await apiPatchTask(draggedId, { sectionId: sid || '' }); } catch (_) {}
+        try { await persistOrder(from); } catch (_) {}
+      }
+      try { await persistOrder(sid); } catch (_) {}
+      await loadTasks();
+    });
   });
 }
 
@@ -745,12 +848,107 @@ function taskRow(t) {
   return li;
 }
 
+function secKey(id){ return id ? ("sec:"+id) : "sec:"; }
+
 function groupTasks(ts) {
   if (settings.sort === "manual") return [{ key: "all", title: "Все", items: ts }];
   const m = new Map();
   ts.forEach((t) => { const k = bucket(t.dueDate); if (!m.has(k)) m.set(k, []); m.get(k).push(t); });
   const order = ["Сегодня", "Завтра", "Позже", "Без даты"];
   return order.filter((k) => m.has(k)).map((k) => ({ key: k, title: k, items: m.get(k) }));
+}
+
+function renderListWithSections(groupsEl) {
+  const bySec = new Map();
+  for (const t of state.tasks) {
+    const k = t.sectionId || '';
+    if (!bySec.has(k)) bySec.set(k, []);
+    bySec.get(k).push(t);
+  }
+
+  const secs = (state.sections || []).slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  const ordered = [''].concat(secs.map((x) => x.id));
+
+  for (const sid of ordered) {
+    const items = bySec.get(sid) || [];
+    if (!items.length && sid !== '') continue;
+
+    const title = sid === '' ? 'несгруппированный' : (secs.find((x) => x.id === sid)?.title || 'Секция');
+    const key = secKey(sid);
+
+    const wrap = document.createElement('section');
+    wrap.dataset.sectionWrap = '1';
+    wrap.dataset.section = sid;
+
+    const head = document.createElement('div');
+    head.className = 'sec-head';
+    head.innerHTML = `<button class="sec-toggle" type="button">${state.sectionCollapsed.has(key) ? '▸' : '▾'}</button><div class="sec-title">${title}</div><div class="sec-count">${items.length}</div><div class="sec-actions">${sid ? '<button class="icon-btn icon-btn-sm sec-more" type="button">⋯</button>' : ''}</div>`;
+
+    head.querySelector('.sec-toggle').addEventListener('click', () => {
+      state.sectionCollapsed.has(key) ? state.sectionCollapsed.delete(key) : state.sectionCollapsed.add(key);
+      saveCollapse();
+      render();
+    });
+
+    if (sid) {
+      // drag section (manual)
+      if (settings.sort === 'manual' && isDesktop()) {
+        head.draggable = true;
+        head.addEventListener('dragstart', (e) => {
+          state.draggingSectionId = sid;
+          wrap.classList.add('sec-dragging');
+          e.dataTransfer.setData('text/plain', sid);
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        head.addEventListener('dragend', () => {
+          wrap.classList.remove('sec-dragging');
+          state.draggingSectionId = null;
+        });
+      }
+
+      head.querySelector('.sec-title').addEventListener('dblclick', async () => {
+        const cur = secs.find((x) => x.id === sid);
+        const name = prompt('Название секции', cur?.title || '');
+        if (name === null) return;
+        const t = name.trim();
+        if (!t) return;
+        await apiPatchSection(sid, { title: t });
+        await loadTasks();
+      });
+
+      head.querySelector('.sec-more')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const act = prompt('Секция: 1) переименовать  2) удалить', '1');
+        if (act === '2') {
+          if (!confirm('Удалить секцию? Задачи перейдут в несгруппированный.')) return;
+          await apiDeleteSection(sid);
+          await loadTasks();
+          return;
+        }
+        if (act === '1') {
+          const cur = secs.find((x) => x.id === sid);
+          const name = prompt('Название секции', cur?.title || '');
+          if (name === null) return;
+          const t = name.trim();
+          if (!t) return;
+          await apiPatchSection(sid, { title: t });
+          await loadTasks();
+        }
+      });
+    }
+
+    const ul = document.createElement('ul');
+    ul.className = 'tasks';
+    ul.dataset.section = sid;
+
+    if (!state.sectionCollapsed.has(key)) {
+      items.forEach((t) => ul.appendChild(taskRow(t)));
+    }
+
+    wrap.appendChild(head);
+    wrap.appendChild(ul);
+    groupsEl.appendChild(wrap);
+  }
 }
 
 function render() {
@@ -768,33 +966,38 @@ function render() {
     $("paneTitle").textContent = $("pageTitle")?.textContent || "";
     $("paneCount").textContent = String(state.tasks.length);
   }
+  if (state.activeKind === 'list') {
+    renderListWithSections(groups);
+  } else {
+    groupTasks(state.tasks).forEach((g) => {
+      const sec = document.createElement('section');
+      const head = document.createElement('button');
+      head.className = 'section-head';
+      head.textContent = `${g.title} ${g.items.length}`;
+      head.insertAdjacentText('beforeend', ` ${state.collapsed.has(g.key) ? '▸' : '▾'}`);
+      head.addEventListener('click', () => {
+        state.collapsed.has(g.key) ? state.collapsed.delete(g.key) : state.collapsed.add(g.key);
+        saveCollapse();
+        render();
+      });
 
-  groupTasks(state.tasks).forEach((g) => {
-    const sec = document.createElement("section");
-    const head = document.createElement("button");
-    head.className = "section-head";
-    head.textContent = `${g.title} ${g.items.length}`;
-    head.insertAdjacentText("beforeend", ` ${state.collapsed.has(g.key) ? "▸" : "▾"}`);
-    head.addEventListener("click", () => {
-      state.collapsed.has(g.key) ? state.collapsed.delete(g.key) : state.collapsed.add(g.key);
-      saveCollapse();
-      render();
+      const ul = document.createElement('ul');
+      ul.className = 'tasks';
+      ul.dataset.section = '';
+      if (!state.collapsed.has(g.key)) g.items.forEach((t) => ul.appendChild(taskRow(t)));
+
+      sec.appendChild(head);
+      sec.appendChild(ul);
+      groups.appendChild(sec);
     });
-
-    const ul = document.createElement("ul");
-    ul.className = "tasks";
-    if (!state.collapsed.has(g.key)) g.items.forEach((t) => ul.appendChild(taskRow(t)));
-
-    sec.appendChild(head);
-    sec.appendChild(ul);
-    groups.appendChild(sec);
-  });
+  }
 
   $("completedCount").textContent = String(state.done.length);
   $("completedChevron").textContent = state.doneCollapsed ? "▸" : "▾";
   if (!state.doneCollapsed) state.done.forEach((t) => done.appendChild(taskRow(t)));
 
   setupDrop();
+  setupSectionDrop();
 
   // keep desktop editor in sync
   renderTaskEditor();
@@ -817,6 +1020,7 @@ async function loadTasks() {
 
   if (state.activeKind === "smart") {
     if (state.activeId === "today") { base.due = today; done.due = today; }
+    if (state.activeId === "day" && state.smartDue) { base.due = state.smartDue; done.due = state.smartDue; }
     if (state.activeId === "next7") { base.due_from = today; base.due_to = nextTo; done.due_from = today; done.due_to = nextTo; }
     if (state.activeId === "inbox") {
       const inboxId = state.system.inboxId;
@@ -830,6 +1034,11 @@ async function loadTasks() {
   const [a, d] = await Promise.all([apiGetTasks(base), apiGetTasks(done)]);
   state.tasks = a;
   state.done = d;
+  if (state.activeKind === "list") {
+    try { state.sections = await apiGetSections({ list_id: state.activeId }); } catch { state.sections = []; }
+  } else {
+    state.sections = [];
+  }
   render();
 }
 
@@ -1112,6 +1321,12 @@ async function renderCalendar() {
     }
 
     cell.appendChild(events);
+
+    cell.addEventListener("click", () => {
+      state.smartDue = dayIso;
+      setActive("smart", "day");
+    });
+
     grid.appendChild(cell);
   }
 }
@@ -1344,6 +1559,8 @@ on($("btnEditFolderDelete"), "click", async () => {
 // pick list
 on($("compListBtn"), "click", () => {
   const pl = $("pickList");
+  const sheet = $("pickSheet");
+  if (sheet) sheet.querySelector(".sheet-title").textContent = "Список";
   pl.innerHTML = "";
   state.lists.forEach((l) => {
     const btn = document.createElement("button");
@@ -1382,6 +1599,8 @@ on($("teListBtn"), "click", () => {
   const id = state.selectedTaskId;
   if (!id) return;
   const pl = $("pickList");
+  const sheet = $("pickSheet");
+  if (sheet) sheet.querySelector(".sheet-title").textContent = "Список";
   pl.innerHTML = "";
   state.lists.forEach((l) => {
     const btn = document.createElement("button");
@@ -1423,6 +1642,13 @@ on($("teMore"), "click", async () => {
 // task sheet
 on($("taskBackdrop"), "click", () => closeSheet("taskBackdrop", "taskSheet"));
 on($("btnTaskCancel"), "click", () => closeSheet("taskBackdrop", "taskSheet"));
+
+on($("taskListSelect"), 'change', async () => {
+  const lid = $("taskListSelect").value;
+  const secs = await ensureSectionsForList(lid);
+  fillSectionSelect($("taskSectionSelect"), secs, '');
+});
+
 document.querySelectorAll("#taskPrio .prio-btn").forEach((b) => on(b, "click", () => { document.querySelectorAll("#taskPrio .prio-btn").forEach((x) => x.classList.toggle("active", x === b)); }));
 on($("btnTaskDelete"), "click", async () => { const id = state.editing.taskId; if (!id) return; if (!confirm("Удалить задачу?")) return; await apiDeleteTask(id); closeSheet("taskBackdrop", "taskSheet"); await refreshCounts(); await loadTasks(); });
 on($("btnTaskToggle"), "click", async () => { const id = state.editing.taskId; if (!id) return; const isDone = $("btnTaskToggle").dataset.completed === "1"; await apiPatchTask(id, { completed: !isDone }); closeSheet("taskBackdrop", "taskSheet"); await refreshCounts(); await loadTasks(); });
@@ -1435,10 +1661,11 @@ on($("taskForm"), "submit", async (e) => {
   const notes = $("taskNotes").value.trim() || null;
   const listId = $("taskListSelect").value || state.system.inboxId;
   const dueDate = $("taskDueDate").value || null;
+  const sectionId = $("taskSectionSelect") ? ($("taskSectionSelect").value || "") : "";
   const tags = parseTagsInput($("taskTags").value);
   const prioBtn = [...document.querySelectorAll("#taskPrio .prio-btn")].find((b) => b.classList.contains("active"));
   const priority = prioBtn ? Number(prioBtn.dataset.p) : 0;
-  await apiPatchTask(id, { title, listId, dueDate, tags, priority, notes });
+  await apiPatchTask(id, { title, listId, sectionId, dueDate, tags, priority, notes });
   closeSheet("taskBackdrop", "taskSheet");
   await refreshCounts();
   await loadTasks();
@@ -1461,7 +1688,18 @@ on($("deskDueDate"), "change", () => {
 });
 on($("deskListBtn"), "click", () => $("compListBtn")?.click?.());
 on($("paneAdd"), "click", () => $("deskAddInput")?.focus());
-on($("newSectionBtn"), "click", () => alert("Секции — в разработке"));
+on($("newSectionBtn"), "click", async () => {
+  if (state.activeKind !== "list") {
+    alert("Секции доступны только внутри списка");
+    return;
+  }
+  const name = prompt("Название секции", "Новая секция");
+  if (name === null) return;
+  const title = name.trim();
+  if (!title) return;
+  await apiCreateSection({ listId: state.activeId, title });
+  await loadTasks();
+});
 
 on($("searchInput"), "input", loadTasks);
 
@@ -1521,6 +1759,51 @@ on($("calAdd"), "click", () => { setModule("tasks"); setActive("smart", "inbox")
 window.addEventListener("resize", () => {
   applyLayout();
   updateAddPlaceholder();
+});
+
+function isTypingTarget(el){
+  if (!el) return false;
+  const tag = (el.tagName||'').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || el.isContentEditable) return true;
+  return false;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (isTypingTarget(e.target) && e.key !== 'Escape') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    setModule('search');
+    setTimeout(() => $('globalSearchInput')?.focus?.(), 0);
+    return;
+  }
+
+  if (e.key === '/') {
+    e.preventDefault();
+    setModule('search');
+    setTimeout(() => $('globalSearchInput')?.focus?.(), 0);
+    return;
+  }
+
+  if (e.key.toLowerCase() === 'n') {
+    e.preventDefault();
+    setModule('tasks');
+    setTimeout(() => {
+      const el = isDesktop() ? $('deskAddInput') : $('compInput');
+      el?.focus?.();
+    }, 0);
+    return;
+  }
+
+  if (e.key === 'Escape') {
+    try { closeTaskEditor(); } catch {}
+    closeDrawer();
+    ['taskBackdrop','taskSheet','pickBackdrop','pickSheet','editListBackdrop','editListSheet','editFolderBackdrop','editFolderSheet'].forEach((id)=>{
+      const el = $(id);
+      if (el) el.hidden = true;
+    });
+    $('accountMenu') && ($('accountMenu').hidden = true);
+  }
 });
 
 // Auth UI

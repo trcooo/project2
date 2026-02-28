@@ -147,6 +147,18 @@ lists = Table(
     Column("folder_id", String, nullable=True),
 )
 
+
+
+sections = Table(
+    "sections", metadata,
+    Column("id", String, primary_key=True),
+    Column("user_id", String, nullable=True),
+    Column("list_id", String, nullable=False),
+    Column("title", String, nullable=False),
+    Column("sort_order", Integer, nullable=False, server_default="0"),
+    Column("created_at", BigInteger, nullable=False),
+)
+
 tasks = Table(
     "tasks", metadata,
     Column("id", String, primary_key=True),
@@ -157,6 +169,7 @@ tasks = Table(
     Column("updated_at", BigInteger, nullable=False),
     Column("completed_at", BigInteger, nullable=True),
     Column("list_id", String, nullable=False),
+    Column("section_id", String, nullable=True),
     Column("due_date", String, nullable=True),
     Column("order_index", BigInteger, nullable=True),
     Column("priority", Integer, nullable=False, server_default="0"),
@@ -257,6 +270,7 @@ def init_db():
             # core (must exist)
             "list_id": "list_id TEXT",
             "due_date": "due_date TEXT",
+            "section_id": "section_id TEXT",
             # new features
             "order_index": "order_index BIGINT",
             "priority": "priority INTEGER NOT NULL DEFAULT 0",
@@ -342,6 +356,10 @@ with engine.begin() as conn:
         conn.execute(update(lists).values(user_id=PUBLIC_UID))
         conn.execute(update(folders).values(user_id=PUBLIC_UID))
         conn.execute(update(tasks).values(user_id=PUBLIC_UID))
+        try:
+            conn.execute(update(sections).values(user_id=PUBLIC_UID))
+        except Exception:
+            pass
     except Exception:
         pass
     try:
@@ -379,12 +397,26 @@ class ListUpdate(BaseModel):
     emoji: Optional[str] = Field(default=None, min_length=1, max_length=4)
     folderId: Optional[Optional[str]] = None
 
+class SectionCreate(BaseModel):
+    listId: str
+    title: str = Field(min_length=1, max_length=120)
+
+class SectionOut(BaseModel):
+    id: str
+    listId: str
+    title: str
+    sortOrder: int
+
+class SectionUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
 class ReorderSimple(BaseModel):
     orderedIds: List[str]
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     listId: Optional[str] = Field(default=None)
+    sectionId: Optional[str] = Field(default=None)
     dueDate: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     priority: int = Field(default=0, ge=0, le=3)
@@ -394,6 +426,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     completed: Optional[bool] = None
     listId: Optional[str] = None
+    sectionId: Optional[str] = None
     dueDate: Optional[Optional[str]] = None
     tags: Optional[List[str]] = None
     priority: Optional[int] = Field(default=None, ge=0, le=3)
@@ -401,12 +434,13 @@ class TaskUpdate(BaseModel):
 
 class ReorderPayload(BaseModel):
     listId: str
+    sectionId: Optional[str] = None
     orderedIds: List[str]
 
 class TaskOut(BaseModel):
     id: str; title: str; completed: bool
     createdAt: int; updatedAt: int; completedAt: Optional[int] = None
-    listId: str; dueDate: Optional[str] = None
+    listId: str; sectionId: Optional[str] = None; dueDate: Optional[str] = None
     orderIndex: Optional[int] = None
     tags: List[str] = Field(default_factory=list)
     priority: int = 0
@@ -414,12 +448,13 @@ class TaskOut(BaseModel):
 
 def to_folder_out(r): return FolderOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]))
 def to_list_out(r): return ListOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]), folderId=r.get("folder_id"), systemKey=r.get("system_key"))
+def to_section_out(r): return SectionOut(id=r["id"], listId=r["list_id"], title=r["title"], sortOrder=int(r["sort_order"]))
 def to_task_out(r): 
     return TaskOut(
         id=r["id"], title=r["title"], completed=bool(r["completed"]),
         createdAt=int(r["created_at"]), updatedAt=int(r["updated_at"]),
         completedAt=(int(r["completed_at"]) if r["completed_at"] is not None else None),
-        listId=r["list_id"], dueDate=r["due_date"],
+        listId=r["list_id"], sectionId=r.get("section_id"), dueDate=r["due_date"],
         orderIndex=(int(r["order_index"]) if r.get("order_index") is not None else None),
         tags=parse_tags_json(r.get("tags_json") or "[]"),
         priority=int(r.get("priority") or 0),
@@ -452,6 +487,16 @@ def ensure_list_exists(conn, user_id: str, list_id: str):
 def ensure_folder_exists(conn, user_id: str, folder_id: str):
     if not conn.execute(select(folders.c.id).where(and_(folders.c.id == folder_id, folders.c.user_id == user_id))).first():
         raise HTTPException(status_code=400, detail=f"Folder not found")
+
+def ensure_section_exists(conn, user_id: str, section_id: str, list_id: Optional[str] = None):
+    if not section_id:
+        raise HTTPException(status_code=400, detail="sectionId is empty")
+    row = conn.execute(select(sections).where(and_(sections.c.id == section_id, sections.c.user_id == user_id))).mappings().first()
+    if not row:
+        raise HTTPException(status_code=400, detail="Section not found")
+    if list_id is not None and row.get("list_id") != list_id:
+        raise HTTPException(status_code=400, detail="Section does not belong to list")
+    return row
 
 # --- Auth API ---
 
@@ -678,6 +723,69 @@ def reorder_lists(payload: ReorderSimple, user=Depends(require_user)):
             conn.execute(update(lists).where(and_(lists.c.id==lid, lists.c.user_id==user["id"])).values(sort_order=base + i * 10))
     return {"ok": True}
 
+@app.get("/api/sections", response_model=List[SectionOut])
+def list_sections(list_id: str, user=Depends(require_user)):
+    lid = list_id.strip()
+    if not lid:
+        raise HTTPException(status_code=400, detail="list_id required")
+    with engine.connect() as conn:
+        ensure_list_exists(conn, user["id"], lid)
+        rows = conn.execute(
+            select(sections).where(and_(sections.c.user_id==user["id"], sections.c.list_id==lid)).order_by(sections.c.sort_order.asc())
+        ).mappings().all()
+    return [to_section_out(r) for r in rows]
+
+@app.post("/api/sections", response_model=SectionOut)
+def create_section(payload: SectionCreate, user=Depends(require_user)):
+    lid = payload.listId.strip()
+    title = payload.title.strip()
+    if not lid or not title:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    sid = gen_id()
+    with engine.begin() as conn:
+        ensure_list_exists(conn, user["id"], lid)
+        so = next_sort_order(sections, conn=conn, user_id=user["id"])
+        row = conn.execute(insert(sections).values(id=sid, user_id=user["id"], list_id=lid, title=title, sort_order=so, created_at=now_ts()).returning(sections)).mappings().first()
+    return to_section_out(row)
+
+@app.patch("/api/sections/{section_id}", response_model=SectionOut)
+def update_section(section_id: str, payload: SectionUpdate, user=Depends(require_user)):
+    values = {}
+    if payload.title is not None:
+        t = payload.title.strip()
+        if not t:
+            raise HTTPException(status_code=400, detail="Title is empty")
+        values["title"] = t
+    if not values:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    stmt = update(sections).where(and_(sections.c.id==section_id, sections.c.user_id==user["id"])).values(**values).returning(sections)
+    with engine.begin() as conn:
+        row = conn.execute(stmt).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Section not found")
+    return to_section_out(row)
+
+@app.delete("/api/sections/{section_id}")
+def delete_section(section_id: str, user=Depends(require_user)):
+    with engine.begin() as conn:
+        # detach tasks
+        conn.execute(update(tasks).where(and_(tasks.c.section_id==section_id, tasks.c.user_id==user["id"])).values(section_id=None, updated_at=now_ts()))
+        res = conn.execute(delete(sections).where(and_(sections.c.id==section_id, sections.c.user_id==user["id"])))
+        if res.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Section not found")
+    return {"deleted": True}
+
+@app.post("/api/sections/reorder")
+def reorder_sections(payload: ReorderSimple, user=Depends(require_user)):
+    ordered = [x for x in payload.orderedIds if isinstance(x, str) and x.strip()]
+    if not ordered:
+        raise HTTPException(status_code=400, detail="orderedIds required")
+    base = 10
+    with engine.begin() as conn:
+        for i, sid in enumerate(ordered):
+            conn.execute(update(sections).where(and_(sections.c.id==sid, sections.c.user_id==user["id"])).values(sort_order=base + i*10))
+    return {"ok": True}
+
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=None, due: Optional[str]=None,
               due_from: Optional[str]=None, due_to: Optional[str]=None, q: Optional[str]=None,
@@ -732,12 +840,20 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
         else:
             list_id = inbox_list_id(conn, user["id"])
 
+        section_id = None
+        if payload.sectionId:
+            section_id = payload.sectionId.strip()
+            if section_id:
+                ensure_section_exists(conn, user["id"], section_id, list_id)
+            else:
+                section_id = None
+
         due = validate_date_str(payload.dueDate)
         tid = gen_id(); ts = now_ts()
         order_index = ts*1000
         stmt = insert(tasks).values(
             id=tid,user_id=user["id"],title=title,completed=False,created_at=ts,updated_at=ts,completed_at=None,
-            list_id=list_id,due_date=due,order_index=order_index,
+            list_id=list_id,section_id=section_id,due_date=due,order_index=order_index,
             priority=int(payload.priority or 0),
             notes=(payload.notes.strip() if payload.notes else None),
             tags_json=dumps_tags(payload.tags)
@@ -765,6 +881,20 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
         with engine.connect() as conn:
             ensure_list_exists(conn, user["id"], lid)
         values["list_id"]=lid
+
+        # If moving to another list without specifying section, drop section assignment
+        if payload.sectionId is None:
+            values["section_id"] = None
+
+    if payload.sectionId is not None:
+        sid = payload.sectionId.strip()
+        if not sid:
+            values["section_id"] = None
+        else:
+            target_list = values.get("list_id") or cur["list_id"]
+            with engine.connect() as conn:
+                ensure_section_exists(conn, user["id"], sid, target_list)
+            values["section_id"] = sid
     if payload.dueDate is not None: values["due_date"]=validate_date_str(payload.dueDate)
     if payload.tags is not None: values["tags_json"]=dumps_tags(payload.tags)
     if payload.priority is not None: values["priority"]=int(payload.priority)
@@ -779,15 +909,26 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
 @app.post("/api/tasks/reorder")
 def reorder_tasks(payload: ReorderPayload, user=Depends(require_user)):
     list_id = payload.listId.strip()
-    if not list_id: raise HTTPException(status_code=400, detail="listId required")
+    if not list_id:
+        raise HTTPException(status_code=400, detail="listId required")
+    section_id = payload.sectionId.strip() if payload.sectionId else None
     with engine.connect() as conn:
         ensure_list_exists(conn, user["id"], list_id)
+        if section_id:
+            ensure_section_exists(conn, user["id"], section_id, list_id)
     ordered=[x for x in payload.orderedIds if isinstance(x,str) and x.strip()]
-    if not ordered: raise HTTPException(status_code=400, detail="orderedIds required")
-    base = now_ts()*1000; step=10
+    if not ordered:
+        raise HTTPException(status_code=400, detail="orderedIds required")
+    base = now_ts()*1000
+    step=10
     with engine.begin() as conn:
         for i, tid in enumerate(ordered):
-            conn.execute(update(tasks).where(and_(tasks.c.id==tid, tasks.c.list_id==list_id, tasks.c.user_id==user["id"])).values(order_index=base+i*step))
+            cond = [tasks.c.id==tid, tasks.c.list_id==list_id, tasks.c.user_id==user["id"]]
+            if section_id:
+                cond.append(tasks.c.section_id==section_id)
+            else:
+                cond.append(tasks.c.section_id.is_(None))
+            conn.execute(update(tasks).where(and_(*cond)).values(order_index=base+i*step))
     return {"ok": True}
 
 @app.delete("/api/tasks/{task_id}")
