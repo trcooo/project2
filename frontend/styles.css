@@ -19,6 +19,13 @@
   --rail-w:56px;
   --sidebar-w:320px;
 }
+
+/*
+  Ensure the HTML [hidden] attribute always hides elements.
+  Some component rules (e.g. .modal { display:flex }) can otherwise override
+  the user-agent default and make hidden modals appear and block the UI.
+*/
+[hidden]{display:none !important;}
 :root[data-theme="light"]{
   --bg:#eef1f6;
   --bg2:#e9eef8;
