@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v14");
+console.log("ClockTime build v16-noauth");
 
 const settings = (() => {
   try {
@@ -66,36 +66,17 @@ function setAuth(token, user) {
   updateAccountUI();
 }
 
-function logout() {
-  // Best-effort server cookie cleanup (works even if Authorization header is stripped)
-  fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
-  setAuth("", null);
+function logout(){
+  // no-auth: just reload data
   _started = false;
-  showWelcome("login");
+  startApp();
 }
 
-function showWelcome(mode = "login") {
-  const w = $("welcome");
-  const app = $("appShell");
-  if (w) w.hidden = false;
-  if (app) app.hidden = true;
-  switchAuthMode(mode);
-}
+function showWelcome(){/* no-auth */}
 
-function hideWelcome() {
-  const w = $("welcome");
-  const app = $("appShell");
-  if (w) w.hidden = true;
-  if (app) app.hidden = false;
-}
+function hideWelcome(){/* no-auth */}
 
-function openAuth(mode) {
-  showWelcome(mode);
-  setTimeout(() => {
-    if (mode === "register") $("regEmail")?.focus?.();
-    else $("loginEmail")?.focus?.();
-  }, 0);
-}
+function openAuth(){/* no-auth */}
 
 function updateAccountUI() {
   const email = auth.user?.email || "";
@@ -135,14 +116,6 @@ async function api(path, opt) {
   // fixes cases where PWA / embedded browsers otherwise drop Set-Cookie.
   if (!o.credentials) o.credentials = "include";
   o.headers = { ...(o.headers || {}) };
-  // Attach token for every /api/* request except public auth endpoints.
-  // This avoids the "Not authenticated" error on /api/auth/me and makes behavior predictable.
-  const isPublicAuth = path === "/api/auth/login" || path === "/api/auth/register";
-  if (path.startsWith("/api/") && auth.token && !isPublicAuth) {
-    o.headers["Authorization"] = "Bearer " + auth.token;
-    // Fallback for hosts/proxies that may strip Authorization.
-    o.headers["X-Auth-Token"] = auth.token;
-  }
   const r = await fetch(API_BASE + path, o);
 
   // IMPORTANT:
@@ -151,12 +124,6 @@ async function api(path, opt) {
   // and calling text() afterwards throws: "body stream already read".
   const ct = (r.headers.get("content-type") || "").toLowerCase();
   const raw = await r.text();
-
-  if (r.status === 401) {
-    const err = new Error("Требуется вход");
-    err.code = 401;
-    throw err;
-  }
 
   if (!r.ok) {
     let msg = raw || "Ошибка запроса";
@@ -1677,35 +1644,15 @@ async function startApp() {
     applyLayout();
   } catch (e) {
     _started = false;
-    // If we lost auth, go back to welcome.
-    if (e && (e.code === 401 || String(e.message || e).toLowerCase().includes("вход"))) {
-      setAuth("", null);
-      showWelcome("login");
-      const msg = "Сессия не установлена. Попробуйте войти ещё раз.";
-      if ($("loginError")) {
-        $("loginError").textContent = msg;
-        $("loginError").hidden = false;
-      }
-      return;
-    }
-    alert("Ошибка: " + (e.message || e));
+alert("Ошибка: " + (e.message || e));
   }
 }
 
-// Boot
-// We always try /api/auth/me first. It works with:
-//  - Authorization: Bearer <token> (localStorage)
-//  - HttpOnly cookie (set by backend on login/register)
+// Boot (no auth)
 (async () => {
   try {
-    const me = await apiAuthMe();
-    // Keep token (if present). If not present, cookie session still works.
-    setAuth(auth.token, me);
-    hideWelcome();
     await startApp();
-  } catch {
-    // If the stored token is invalid/expired, clear it.
-    setAuth("", null);
-    showWelcome("login");
+  } catch (e) {
+    alert("Ошибка: " + (e?.message || e));
   }
 })();

@@ -57,39 +57,9 @@
   </symbol>
 </svg>
 
-<!-- Auth screen (login by default). Registration is optional via a top-right button. -->
-<div class="welcome" id="welcome">
-  <div class="auth-card" id="authCard">
-    <div class="auth-head">
-      <div class="auth-brand">ClockTime</div>
-      <button class="auth-top" id="btnAuthToggle" type="button">Регистрация</button>
-    </div>
-
-    <form class="auth-form" id="formLogin">
-      <label class="auth-label">Email</label>
-      <input class="auth-input" id="loginEmail" type="email" autocomplete="email" required placeholder="you@example.com" />
-      <label class="auth-label">Пароль</label>
-      <input class="auth-input" id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••" />
-      <div class="auth-error" id="loginError" hidden></div>
-      <button class="auth-btn" id="btnLogin" type="submit">Войти</button>
-      <div class="auth-alt">Нет аккаунта? <button class="auth-link" id="linkToRegister" type="button">Зарегистрироваться</button></div>
-    </form>
-
-    <form class="auth-form" id="formRegister" hidden>
-      <label class="auth-label">Email</label>
-      <input class="auth-input" id="regEmail" type="email" autocomplete="email" required placeholder="you@example.com" />
-      <label class="auth-label">Пароль</label>
-      <input class="auth-input" id="regPassword" type="password" autocomplete="new-password" required minlength="6" placeholder="Минимум 6 символов" />
-      <label class="auth-label">Повтор пароля</label>
-      <input class="auth-input" id="regPassword2" type="password" autocomplete="new-password" required minlength="6" placeholder="Повторите пароль" />
-      <div class="auth-error" id="regError" hidden></div>
-      <button class="auth-btn" id="btnRegister" type="submit">Создать аккаунт</button>
-      <div class="auth-alt">Уже есть аккаунт? <button class="auth-link" id="linkToLogin" type="button">Войти</button></div>
-    </form>
-  </div>
 </div>
 
-<div class="app-shell" id="appShell" hidden>
+<div class="app-shell" id="appShell">
   <!-- mobile backdrop for sidebar -->
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
@@ -123,7 +93,7 @@
     <button class="menu-item" id="menuStats">Статистика</button>
     <button class="menu-item" id="menuPremium">Премиум</button>
     <div class="menu-sep"></div>
-    <button class="menu-item" id="menuLogout">Выйти</button>
+    <button class="menu-item" id="menuLogout">Сбросить</button>
   </div>
 
   <!-- sidebar -->

@@ -107,24 +107,9 @@ def require_user(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     ct_token: str | None = Cookie(default=None, alias=AUTH_COOKIE),
 ) -> dict:
-    token = None
-    if creds and creds.credentials:
-        token = creds.credentials
-    # Some hosting/proxy layers may strip the Authorization header.
-    # Accept a custom header as a reliable fallback.
-    elif request.headers.get("x-auth-token"):
-        token = request.headers.get("x-auth-token")
-    elif ct_token:
-        token = ct_token
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        uid = payload.get("sub")
-        if not uid:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    # No-auth mode: treat the app as a shared workspace.
+    # We ignore incoming credentials and always use PUBLIC_UID.
+    return {"id": PUBLIC_UID}
 
     with engine.connect() as conn:
         u = conn.execute(select(users).where(users.c.id == uid)).mappings().first()
@@ -312,6 +297,10 @@ def init_db():
 
 init_db()
 
+# No-auth mode: shared workspace identifier (all data belongs to this id).
+PUBLIC_UID = os.getenv("PUBLIC_UID", "public")
+
+
 def ensure_user_defaults(conn, user_id: str) -> None:
     """Create default lists for a user if missing."""
     defaults = [
@@ -345,6 +334,20 @@ def is_first_user(conn) -> bool:
         return int(c) == 0
     except Exception:
         return True
+
+
+# No-auth: normalize all existing rows to PUBLIC_UID and ensure default lists exist.
+with engine.begin() as conn:
+    try:
+        conn.execute(update(lists).values(user_id=PUBLIC_UID))
+        conn.execute(update(folders).values(user_id=PUBLIC_UID))
+        conn.execute(update(tasks).values(user_id=PUBLIC_UID))
+    except Exception:
+        pass
+    try:
+        ensure_user_defaults(conn, PUBLIC_UID)
+    except Exception:
+        pass
 
 app = FastAPI(title="TickTick-like ToDo (v4-fixed)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -797,4 +800,3 @@ def delete_task(task_id: str, user=Depends(require_user)):
 FRONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 if os.path.isdir(FRONT_DIR):
     app.mount("/", StaticFiles(directory=FRONT_DIR, html=True), name="frontend")
-
