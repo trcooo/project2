@@ -3,7 +3,7 @@ import os, json
 from datetime import datetime, timezone, date
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Response, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -43,6 +43,26 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALG = "HS256"
 JWT_TTL_SECONDS = int(os.getenv("JWT_TTL_SECONDS", "2592000"))  # 30d
 
+AUTH_COOKIE = os.getenv("AUTH_COOKIE", "ct_token")
+
+def _set_auth_cookie(resp: Response, token: str):
+    """Set session cookie with JWT.
+
+    We keep secure=False so local HTTP dev works; Railway uses HTTPS anyway.
+    """
+    resp.set_cookie(
+        key=AUTH_COOKIE,
+        value=token,
+        max_age=JWT_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+
+def _clear_auth_cookie(resp: Response):
+    resp.delete_cookie(key=AUTH_COOKIE, path="/")
+
 def _pw_prehash(pw: str) -> bytes:
     """Pre-hash to avoid bcrypt's 72-byte input limit and keep runtime predictable."""
     return hashlib.sha256(pw.encode("utf-8")).digest()
@@ -81,10 +101,17 @@ def create_token(user_id: str) -> str:
     exp = now_ts() + JWT_TTL_SECONDS
     return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALG)
 
-def require_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict:
-    if not creds or not creds.credentials:
+def require_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    ct_token: str | None = Cookie(default=None, alias=AUTH_COOKIE),
+) -> dict:
+    token = None
+    if creds and creds.credentials:
+        token = creds.credentials
+    elif ct_token:
+        token = ct_token
+    if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    token = creds.credentials
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
         uid = payload.get("sub")
@@ -440,7 +467,7 @@ def to_user_out(r) -> UserOut:
     return UserOut(id=r["id"], email=r["email"], createdAt=int(r["created_at"]))
 
 @app.post("/api/auth/register", response_model=AuthOut)
-def register(payload: AuthRegister):
+def register(payload: AuthRegister, response: Response):
     email = payload.email.strip().lower()
     pw = payload.password
     if "@" not in email or "." not in email:
@@ -477,10 +504,12 @@ def register(payload: AuthRegister):
 
         ensure_user_defaults(conn, uid)
         u = conn.execute(select(users).where(users.c.id == uid)).mappings().first()
-    return AuthOut(token=create_token(uid), user=to_user_out(u))
+    token = create_token(uid)
+    _set_auth_cookie(response, token)
+    return AuthOut(token=token, user=to_user_out(u))
 
 @app.post("/api/auth/login", response_model=AuthOut)
-def login(payload: AuthLogin):
+def login(payload: AuthLogin, response: Response):
     email = payload.email.strip().lower()
     pw = payload.password
     with engine.begin() as conn:
@@ -490,7 +519,14 @@ def login(payload: AuthLogin):
         if not verify_password(pw, u["password_hash"]):
             raise HTTPException(status_code=400, detail="Неверный email или пароль")
         ensure_user_defaults(conn, u["id"])
-    return AuthOut(token=create_token(u["id"]), user=to_user_out(u))
+    token = create_token(u["id"])
+    _set_auth_cookie(response, token)
+    return AuthOut(token=token, user=to_user_out(u))
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    _clear_auth_cookie(response)
+    return {"ok": True}
 
 @app.get("/api/auth/me", response_model=UserOut)
 def me(user=Depends(require_user)):

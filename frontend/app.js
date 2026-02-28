@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v11");
+console.log("ClockTime build v12");
 
 const settings = (() => {
   try {
@@ -50,13 +50,14 @@ if ("serviceWorker" in navigator) {
 
 // Auth
 let auth = (() => {
-  const token = localStorage.getItem(TOKEN_KEY) || "";
+  const token = (localStorage.getItem(TOKEN_KEY) || "").trim();
   let user = null;
   try { user = JSON.parse(localStorage.getItem(USER_KEY) || "null"); } catch { user = null; }
   return { token, user };
 })();
 
 function setAuth(token, user) {
+  token = (token || "").trim();
   auth = { token, user };
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
@@ -66,6 +67,8 @@ function setAuth(token, user) {
 }
 
 function logout() {
+  // Best-effort server cookie cleanup (works even if Authorization header is stripped)
+  fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
   setAuth("", null);
   _started = false;
   showWelcome(true);
@@ -1587,9 +1590,7 @@ async function doLogin() {
     if (!res || !res.token) throw new Error("Не удалось войти: сервер не вернул токен");
     setAuth(res.token, res.user);
     hideWelcome();
-    try { await startApp(); } catch {}
-    // Hard reload ensures we always end up in the authenticated app shell.
-    setTimeout(() => location.replace("/"), 60);
+    await startApp();
   } catch (err) {
     $("loginError").textContent = err?.message || String(err);
     $("loginError").hidden = false;
@@ -1613,8 +1614,7 @@ async function doRegister() {
     if (!res || !res.token) throw new Error("Не удалось зарегистрироваться: сервер не вернул токен");
     setAuth(res.token, res.user);
     hideWelcome();
-    try { await startApp(); } catch {}
-    setTimeout(() => location.replace("/"), 60);
+    await startApp();
   } catch (err) {
     $("regError").textContent = err?.message || String(err);
     $("regError").hidden = false;
@@ -1665,18 +1665,17 @@ async function startApp() {
 }
 
 // Boot
+// We always try /api/auth/me first. It works with:
+//  - Authorization: Bearer <token> (localStorage)
+//  - HttpOnly cookie (set by backend on login/register)
 (async () => {
   try {
-    if (!auth.token) {
-      showWelcome(true);
-      return;
-    }
-    // validate token
     const me = await apiAuthMe();
+    // Keep token (if present). If not present, cookie session still works.
     setAuth(auth.token, me);
     hideWelcome();
     await startApp();
   } catch {
-    logout();
+    showWelcome(true);
   }
 })();
