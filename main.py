@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from jose import jwt, JWTError
-from passlib.context import CryptContext
+import bcrypt
+import hashlib
 from sqlalchemy import (
     create_engine, MetaData, Table, Column,
     String, Boolean, BigInteger, Integer, Text,
@@ -36,21 +37,45 @@ metadata = MetaData()
 
 # --- Auth / Users ---
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer = HTTPBearer(auto_error=False)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALG = "HS256"
 JWT_TTL_SECONDS = int(os.getenv("JWT_TTL_SECONDS", "2592000"))  # 30d
 
+def _pw_prehash(pw: str) -> bytes:
+    """Pre-hash to avoid bcrypt's 72-byte input limit and keep runtime predictable."""
+    return hashlib.sha256(pw.encode("utf-8")).digest()
+
 def hash_password(pw: str) -> str:
-    return pwd_ctx.hash(pw)
+    # bcrypt works on bytes; we pre-hash with SHA-256 so any password length is supported.
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(_pw_prehash(pw), salt).decode("utf-8")
 
 def verify_password(pw: str, pw_hash: str) -> bool:
+    """Verify password.
+
+    Supports:
+    - New hashes: bcrypt(sha256(password))
+    - Legacy hashes (best effort): bcrypt(password[:72])
+    """
     try:
-        return pwd_ctx.verify(pw, pw_hash)
+        h = pw_hash.encode("utf-8")
     except Exception:
         return False
+
+    def _check(pw_bytes: bytes) -> bool:
+        try:
+            return bcrypt.checkpw(pw_bytes, h)
+        except Exception:
+            return False
+
+    if _check(_pw_prehash(pw)):
+        return True
+
+    # legacy fallback (in case any old accounts were created before the fix)
+    raw = pw.encode("utf-8")[:72]
+    return _check(raw)
 
 def create_token(user_id: str) -> str:
     exp = now_ts() + JWT_TTL_SECONDS
