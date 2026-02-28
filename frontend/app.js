@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v18-ui");
+console.log("ClockTime build v19-ui");
 
 const settings = (() => {
   try {
@@ -20,6 +20,63 @@ const $ = (id) => document.getElementById(id);
 const on = (el, ev, fn) => el && el.addEventListener(ev, fn);
 const isDesktop = () => window.matchMedia && window.matchMedia("(min-width: 900px)").matches;
 const isSplit = () => isDesktop() && window.matchMedia && window.matchMedia("(min-width: 1120px)").matches;
+
+// Simple anchored popover (single instance)
+function closePopover() {
+  const p = $("popover");
+  if (!p) return;
+  p.hidden = true;
+  p.innerHTML = "";
+}
+
+function openPopover(anchorEl, items, { title = null, width = 260 } = {}) {
+  const p = $("popover");
+  if (!p || !anchorEl) return;
+  p.innerHTML = "";
+  if (title) {
+    const h = document.createElement("div");
+    h.className = "pop-title";
+    h.textContent = title;
+    p.appendChild(h);
+  }
+  for (const it of items) {
+    if (it === "sep") {
+      const s = document.createElement("div");
+      s.className = "pop-sep";
+      p.appendChild(s);
+      continue;
+    }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pop-item" + (it.active ? " active" : "");
+    b.innerHTML = `${it.icon ? `<span class="pop-ico">${it.icon}</span>` : ""}<span class="pop-label">${it.label}</span>${it.right ? `<span class="pop-right">${it.right}</span>` : ""}`;
+    b.addEventListener("click", () => {
+      closePopover();
+      it.onSelect && it.onSelect(it.value);
+    });
+    p.appendChild(b);
+  }
+  const r = anchorEl.getBoundingClientRect();
+  const top = Math.min(window.innerHeight - 10, r.bottom + 8);
+  const left = Math.min(window.innerWidth - 10, r.left);
+  p.style.width = `${width}px`;
+  p.style.top = `${top}px`;
+  p.style.left = `${Math.max(10, left)}px`;
+  p.hidden = false;
+
+  // close on outside click
+  setTimeout(() => {
+    const onDoc = (e) => {
+      if (!p.hidden && !p.contains(e.target) && !anchorEl.contains(e.target)) {
+        closePopover();
+        document.removeEventListener("mousedown", onDoc);
+        document.removeEventListener("touchstart", onDoc);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("touchstart", onDoc);
+  }, 0);
+}
 
 function applyTheme() {
   const sysDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -161,11 +218,13 @@ const apiGetFolders = () => api("/api/folders");
 const apiCreateFolder = (p) => api("/api/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiPatchFolder = (id, p) => api("/api/folders/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiDeleteFolder = (id) => api("/api/folders/" + encodeURIComponent(id), { method: "DELETE" });
+const apiReorderFolders = (p) => api("/api/folders/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 
 const apiGetLists = () => api("/api/lists");
 const apiCreateList = (p) => api("/api/lists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiPatchList = (id, p) => api("/api/lists/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiDeleteList = (id) => api("/api/lists/" + encodeURIComponent(id), { method: "DELETE" });
+const apiReorderLists = (p) => api("/api/lists/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 
 const apiGetSections = (params) => api("/api/sections?" + new URLSearchParams(params).toString());
 const apiCreateSection = (p) => api("/api/sections", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
@@ -201,6 +260,7 @@ const state = {
   folders: [],
   lists: [],
   sections: [],
+  // cache: listId -> sections[] (used for editor dropdowns)
   sectionsCache: {},
   tasks: [],
   done: [],
@@ -212,8 +272,10 @@ const state = {
   selectedTaskId: null,
   draggingTask: null,
   draggingSectionId: null,
+  draggingListId: null,
+  draggingFolderId: null,
   editing: { listId: null, folderId: null, taskId: null },
-  composer: { listId: null, dueDate: null, priority: 0 },
+  composer: { listId: null, dueDate: null, priority: 0, sectionId: null },
   system: { inboxId: null },
   calendarCursor: new Date(),
   calendarTasks: [],
@@ -391,7 +453,16 @@ function updateAddPlaceholder() {
   const list = state.lists.find((l) => l.id === listId);
   const name = list?.title || "Входящие";
   const el = $("deskAddInput");
-  if (el) el.placeholder = "+ Добавить задачу";
+  if (el) {
+    if (state.activeKind === 'list' && state.composer.sectionId) {
+      const sid = state.composer.sectionId;
+      const sec = (state.sections || []).find((s) => s.id === sid) || null;
+      const secName = sec?.title || 'секцию';
+      el.placeholder = `+ Добавить задачу в ${secName}`;
+    } else {
+      el.placeholder = "+ Добавить задачу";
+    }
+  }
   const lb = $("deskListBtn");
   if (lb) lb.title = name;
 }
@@ -441,9 +512,10 @@ function renderLists() {
     row.className = "drawer-item";
     row.dataset.kind = "list";
     row.dataset.id = l.id;
+    row.dataset.folder = l.folderId || "";
     row.setAttribute("role", "button");
     row.tabIndex = 0;
-    row.innerHTML = `<span class="di-emoji">${l.emoji || "📌"}</span><span class="di-title">${l.title}</span><span class="di-count" data-count="${l.id}">—</span><button class="di-more" type="button" aria-label="Управление">⋯</button>`;
+    row.innerHTML = `<span class="di-handle" aria-hidden="true">⋮⋮</span><span class="di-emoji">${l.emoji || "📌"}</span><span class="di-title">${l.title}</span><span class="di-count" data-count="${l.id}">—</span><button class="di-more" type="button" aria-label="Управление">⋯</button>`;
 
     row.addEventListener("click", () => setActive("list", l.id));
     row.addEventListener("keydown", (e) => {
@@ -451,18 +523,35 @@ function renderLists() {
     });
 
     row.querySelector(".di-more")?.addEventListener("click", (e) => { e.stopPropagation(); openEditList(l.id); });
+
+    // drag & drop reorder in sidebar (desktop)
+    row.draggable = isDesktop();
+    row.addEventListener("dragstart", (e) => {
+      state.draggingListId = l.id;
+      row.classList.add("dragging");
+      e.dataTransfer.setData("text/plain", l.id);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      state.draggingListId = null;
+    });
     return row;
   };
 
   const renderFolder = (fid, listsArr) => {
     const group = document.createElement("div");
     group.className = "drawer-group";
+    group.dataset.fid = fid || "";
 
     if (fid) {
       const f = folderMap.get(fid);
       const head = document.createElement("div");
       head.className = "folder-head";
-      head.innerHTML = `<span class="di-emoji">${(f?.emoji) || "📁"}</span><span class="fh-title">${(f?.title) || "Папка"}</span><span class="fh-count" data-folder-count="${fid}">—</span><span class="fh-chevron">${state.folderCollapsed.has(fid) ? "▸" : "▾"}</span><button class="di-more" type="button" aria-label="Управление">⋯</button>`;
+      const chev = state.folderCollapsed.has(fid)
+        ? '<svg class="ico sm"><use href="#i-chevron-right"></use></svg>'
+        : '<svg class="ico sm"><use href="#i-chevron-down"></use></svg>';
+      head.innerHTML = `<span class="di-handle" aria-hidden="true">⋮⋮</span><span class="di-emoji">${(f?.emoji) || "📁"}</span><span class="fh-title">${(f?.title) || "Папка"}</span><span class="fh-count" data-folder-count="${fid}">—</span><span class="fh-chevron">${chev}</span><button class="di-more" type="button" aria-label="Управление">⋯</button>`;
       head.addEventListener("click", () => {
         state.folderCollapsed.has(fid) ? state.folderCollapsed.delete(fid) : state.folderCollapsed.add(fid);
         saveCollapse();
@@ -470,11 +559,25 @@ function renderLists() {
         refreshCounts();
       });
       head.querySelector(".di-more")?.addEventListener("click", (e) => { e.stopPropagation(); openEditFolder(fid); });
+
+      // drag folder group (desktop)
+      head.draggable = isDesktop();
+      head.addEventListener("dragstart", (e) => {
+        state.draggingFolderId = fid;
+        group.classList.add("folder-dragging");
+        e.dataTransfer.setData("text/plain", fid);
+        e.dataTransfer.effectAllowed = "move";
+      });
+      head.addEventListener("dragend", () => {
+        group.classList.remove("folder-dragging");
+        state.draggingFolderId = null;
+      });
       group.appendChild(head);
     }
 
     const wrap = document.createElement("div");
     wrap.className = "folder-lists";
+    wrap.dataset.fid = fid || "";
     if (!fid || !state.folderCollapsed.has(fid)) {
       listsArr.forEach((l) => wrap.appendChild(renderListItem(l)));
     }
@@ -488,6 +591,103 @@ function renderLists() {
   }
   const ungrouped = grouped.get("") || [];
   if (ungrouped.length) renderFolder("", ungrouped);
+
+  setupSidebarDnD();
+}
+
+function sidebarListOrder() {
+  const el = $("listsContainer");
+  if (!el) return [];
+  const ids = [];
+  el.querySelectorAll('.drawer-group .drawer-item[data-kind="list"]').forEach((row) => {
+    const id = row.dataset.id;
+    if (id) ids.push(id);
+  });
+  return ids;
+}
+
+function sidebarFolderOrder() {
+  const el = $("listsContainer");
+  if (!el) return [];
+  const ids = [];
+  el.querySelectorAll('.drawer-group[data-fid]').forEach((g) => {
+    const fid = g.dataset.fid;
+    if (fid) ids.push(fid);
+  });
+  return ids;
+}
+
+function getAfterSidebar(container, y, selector) {
+  const els = [...container.querySelectorAll(selector)].filter((x) => !x.classList.contains('dragging') && !x.classList.contains('folder-dragging'));
+  let best = { o: -1e9, el: null };
+  for (const el of els) {
+    const b = el.getBoundingClientRect();
+    const off = y - b.top - b.height / 2;
+    if (off < 0 && off > best.o) best = { o: off, el };
+  }
+  return best.el;
+}
+
+function setupSidebarDnD() {
+  const root = $("listsContainer");
+  if (!root) return;
+
+  // Folder reorder (drag the folder head)
+  root.querySelectorAll('.drawer-group[data-fid]').forEach((g) => {
+    const fid = g.dataset.fid;
+    if (!fid) return;
+    g.addEventListener('dragover', (e) => {
+      if (!state.draggingFolderId) return;
+      e.preventDefault();
+      const drag = root.querySelector('.drawer-group.folder-dragging');
+      if (!drag) return;
+      const after = getAfterSidebar(root, e.clientY, '.drawer-group[data-fid]');
+      if (!after) root.appendChild(drag);
+      else root.insertBefore(drag, after);
+    });
+  });
+
+  root.addEventListener('drop', async (e) => {
+    if (!state.draggingFolderId) return;
+    e.preventDefault();
+    const ordered = sidebarFolderOrder();
+    try { if (ordered.length) await apiReorderFolders({ orderedIds: ordered }); } catch (_) {}
+    state.draggingFolderId = null;
+    await loadMeta();
+    await refreshCounts();
+  });
+
+  // List reorder + move between folders
+  root.querySelectorAll('.folder-lists').forEach((wrap) => {
+    wrap.addEventListener('dragover', (e) => {
+      if (!state.draggingListId) return;
+      e.preventDefault();
+      const drag = root.querySelector('.drawer-item.dragging');
+      if (!drag) return;
+      const after = getAfterSidebar(wrap, e.clientY, '.drawer-item[data-kind="list"]');
+      if (!after) wrap.appendChild(drag);
+      else wrap.insertBefore(drag, after);
+    });
+
+    wrap.addEventListener('drop', async (e) => {
+      if (!state.draggingListId) return;
+      e.preventDefault();
+      const listId = state.draggingListId;
+      const targetFolder = wrap.dataset.fid || "";
+      const l = state.lists.find((x) => x.id === listId);
+      const fromFolder = l?.folderId || "";
+      if (l && fromFolder !== targetFolder) {
+        try {
+          await apiPatchList(listId, { folderId: targetFolder || null });
+        } catch (_) {}
+      }
+      const ordered = sidebarListOrder();
+      try { if (ordered.length) await apiReorderLists({ orderedIds: ordered }); } catch (_) {}
+      state.draggingListId = null;
+      await loadMeta();
+      await refreshCounts();
+    });
+  });
 }
 
 function renderFolderSelect() {
@@ -871,7 +1071,6 @@ function renderListWithSections(groupsEl) {
 
   for (const sid of ordered) {
     const items = bySec.get(sid) || [];
-    if (!items.length && sid !== '') continue;
 
     const title = sid === '' ? 'несгруппированный' : (secs.find((x) => x.id === sid)?.title || 'Секция');
     const key = secKey(sid);
@@ -882,12 +1081,30 @@ function renderListWithSections(groupsEl) {
 
     const head = document.createElement('div');
     head.className = 'sec-head';
-    head.innerHTML = `<button class="sec-toggle" type="button">${state.sectionCollapsed.has(key) ? '▸' : '▾'}</button><div class="sec-title">${title}</div><div class="sec-count">${items.length}</div><div class="sec-actions">${sid ? '<button class="icon-btn icon-btn-sm sec-more" type="button">⋯</button>' : ''}</div>`;
+    const chev = state.sectionCollapsed.has(key)
+      ? '<svg class="ico sm"><use href="#i-chevron-right"></use></svg>'
+      : '<svg class="ico sm"><use href="#i-chevron-down"></use></svg>';
+    head.innerHTML = `
+      <button class="sec-toggle" type="button" aria-label="Свернуть/развернуть">${chev}</button>
+      <div class="sec-title">${title}</div>
+      <div class="sec-count">${items.length}</div>
+      <div class="sec-actions">
+        <button class="icon-btn icon-btn-sm sec-add" type="button" title="Добавить задачу"><svg class="ico sm"><use href="#i-plus"></use></svg></button>
+        ${sid ? '<button class="icon-btn icon-btn-sm sec-more" type="button" aria-label="Ещё">⋯</button>' : ''}
+      </div>
+    `;
 
     head.querySelector('.sec-toggle').addEventListener('click', () => {
       state.sectionCollapsed.has(key) ? state.sectionCollapsed.delete(key) : state.sectionCollapsed.add(key);
       saveCollapse();
       render();
+    });
+
+    head.querySelector('.sec-add')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.composer.sectionId = sid || null;
+      updateAddPlaceholder();
+      $("deskAddInput")?.focus?.();
     });
 
     if (sid) {
@@ -1035,7 +1252,13 @@ async function loadTasks() {
   state.tasks = a;
   state.done = d;
   if (state.activeKind === "list") {
-    try { state.sections = await apiGetSections({ list_id: state.activeId }); } catch { state.sections = []; }
+    try {
+      state.sections = await apiGetSections({ list_id: state.activeId });
+    } catch {
+      state.sections = [];
+    }
+    // keep cache in sync for editor dropdowns
+    state.sectionsCache[state.activeId] = state.sections || [];
   } else {
     state.sections = [];
   }
@@ -1196,6 +1419,18 @@ function renderTaskEditor() {
   const list = state.lists.find((l) => l.id === t.listId) || state.lists.find((l) => l.systemKey === "inbox") || null;
   $("teListText").textContent = list?.title || "Входящие";
   $("teToggle").classList.toggle("done", !!t.completed);
+
+  // Section label (may require async cache fill)
+  $("teSectionText").textContent = t.sectionId ? "…" : "несгруппированный";
+  ensureSectionsForList(t.listId).then((secs) => {
+    if (state.selectedTaskId !== t.id) return;
+    const s = t.sectionId ? secs.find((x) => x.id === t.sectionId) : null;
+    $("teSectionText").textContent = s?.title || "несгруппированный";
+  });
+
+  // Visual hint on buttons
+  $("tePriority")?.classList.toggle("active", Number(t.priority || 0) > 0);
+  $("teTags")?.classList.toggle("active", (t.tags || []).length > 0);
 }
 
 // Composer
@@ -1210,7 +1445,10 @@ async function addTaskFromRaw(raw, explicitListId = null, explicitDue = null, ex
   const listId = explicitListId ?? (state.activeKind === "list" ? state.activeId : (state.activeId === "inbox" ? inboxId : (state.composer.listId || inboxId)));
   const priority = p.priority ?? (explicitPriority ?? state.composer.priority);
 
-  await apiCreateTask({ title: p.title, listId, dueDate: due || null, tags: p.tags, priority, notes: null });
+  // If user clicked "＋" on a section header, we add into that section.
+  const sectionId = (state.activeKind === "list") ? (state.composer.sectionId || null) : null;
+
+  await apiCreateTask({ title: p.title, listId, sectionId, dueDate: due || null, tags: p.tags, priority, notes: null });
   await refreshCounts();
   await loadTasks();
 }
@@ -1231,6 +1469,8 @@ async function addTaskDesktop() {
   if (!raw) return;
   await addTaskFromRaw(raw);
   $("deskAddInput").value = "";
+  state.composer.sectionId = null;
+  updateAddPlaceholder();
 }
 
 // Calendar
@@ -1284,14 +1524,15 @@ async function renderCalendar() {
     tasksByDate.get(t.dueDate).push(t);
   }
 
+  const todayIso = iso(new Date());
   for (let i = 0; i < 42; i++) {
     const day = addDays(start, i);
     const dayIso = iso(day);
     const cell = document.createElement("div");
-    cell.className = "cal-cell";
+    cell.className = "cal-cell" + (dayIso === todayIso ? " today" : "");
 
     const head = document.createElement("div");
-    head.className = "cal-day" + (day.getMonth() !== month ? " muted" : "");
+    head.className = "cal-day" + (day.getMonth() !== month ? " muted" : "") + (dayIso === todayIso ? " today" : "");
     head.textContent = String(day.getDate());
     cell.appendChild(head);
 
@@ -1595,9 +1836,28 @@ on($("teToggle"), "click", async () => {
   if (!t) return;
   await patchSelectedTask({ completed: !t.completed }, { reload: true });
 });
-on($("teListBtn"), "click", () => {
-  const id = state.selectedTaskId;
-  if (!id) return;
+on($("teListBtn"), "click", async (e) => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+
+  // Desktop: anchored popover (TickTick-like)
+  if (isDesktop()) {
+    const items = state.lists.map((l) => ({
+      label: `${l.emoji || "📌"} ${l.title}`,
+      value: l.id,
+      active: l.id === t.listId,
+      onSelect: async (val) => {
+        // reset section when moving list
+        await patchSelectedTask({ listId: val, sectionId: "" }, { reload: true });
+        // refresh cache for new list
+        await ensureSectionsForList(val);
+      },
+    }));
+    openPopover($("teListBtn"), items, { title: "Список", width: 300 });
+    return;
+  }
+
+  // Mobile/narrow: bottom sheet
   const pl = $("pickList");
   const sheet = $("pickSheet");
   if (sheet) sheet.querySelector(".sheet-title").textContent = "Список";
@@ -1607,18 +1867,48 @@ on($("teListBtn"), "click", () => {
     btn.className = "sheet-option";
     btn.textContent = `${l.emoji || "📌"} ${l.title}`;
     btn.onclick = async () => {
-      await patchSelectedTask({ listId: l.id }, { reload: true });
+      await patchSelectedTask({ listId: l.id, sectionId: "" }, { reload: true });
       closeSheet("pickBackdrop", "pickSheet");
     };
     pl.appendChild(btn);
   });
   openSheet("pickBackdrop", "pickSheet");
 });
+
+on($("teSectionBtn"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const secs = await ensureSectionsForList(t.listId);
+  const items = [
+    { label: "несгруппированный", value: "", active: !t.sectionId, onSelect: async () => patchSelectedTask({ sectionId: "" }, { reload: true }) },
+    "sep",
+    ...secs.map((s) => ({
+      label: s.title,
+      value: s.id,
+      active: s.id === t.sectionId,
+      onSelect: async (val) => patchSelectedTask({ sectionId: val }, { reload: true }),
+    })),
+  ];
+  openPopover($("teSectionBtn"), items, { title: "Секция", width: 280 });
+});
+
 on($("tePriority"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
   if (!t) return;
-  const next = ((Number(t.priority || 0) + 1) % 4);
-  await patchSelectedTask({ priority: next }, { reload: false });
+  const icons = {
+    0: '<svg class="ico sm"><use href="#i-flag"></use></svg>',
+    1: '<span class="prio-dot p1">!</span>',
+    2: '<span class="prio-dot p2">!!</span>',
+    3: '<span class="prio-dot p3">!!!</span>',
+  };
+  const items = [0,1,2,3].map((p) => ({
+    label: p === 0 ? "Без приоритета" : `Приоритет ${p}`,
+    value: p,
+    active: Number(t.priority || 0) === p,
+    icon: icons[p],
+    onSelect: async (val) => patchSelectedTask({ priority: Number(val) }, { reload: false }),
+  }));
+  openPopover($("tePriority"), items, { title: "Приоритет", width: 240 });
 });
 on($("teTags"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
@@ -1632,11 +1922,21 @@ on($("teTags"), "click", async () => {
 on($("teMore"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
   if (!t) return;
-  if (!confirm("Удалить задачу?")) return;
-  await apiDeleteTask(t.id);
-  closeTaskEditor();
-  await refreshCounts();
-  await loadTasks();
+  const items = [
+    {
+      label: "Удалить задачу",
+      value: "delete",
+      icon: '<svg class="ico sm"><use href="#i-trash"></use></svg>',
+      onSelect: async () => {
+        if (!confirm("Удалить задачу?")) return;
+        await apiDeleteTask(t.id);
+        closeTaskEditor();
+        await refreshCounts();
+        await loadTasks();
+      }
+    }
+  ];
+  openPopover($("teMore"), items, { title: "Действия", width: 220 });
 });
 
 // task sheet
@@ -1797,6 +2097,7 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape') {
     try { closeTaskEditor(); } catch {}
+    try { closePopover(); } catch {}
     closeDrawer();
     ['taskBackdrop','taskSheet','pickBackdrop','pickSheet','editListBackdrop','editListSheet','editFolderBackdrop','editFolderSheet'].forEach((id)=>{
       const el = $(id);

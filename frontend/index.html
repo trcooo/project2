@@ -55,6 +55,15 @@
   <symbol id="i-menu" viewBox="0 0 24 24">
     <path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/>
   </symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M7 10l5 5 5-5 1.4 1.4-6.4 6.4-6.4-6.4L7 10z"/>
+  </symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M10 6l6 6-6 6-1.4-1.4 4.6-4.6-4.6-4.6L10 6z"/>
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/>
+  </symbol>
 </svg>
 
 </div>
@@ -199,7 +208,7 @@
           <button class="dab-icon" id="deskDueBtn" type="button" aria-label="Дата">
             <svg class="ico sm"><use href="#i-calendar"></use></svg>
           </button>
-          <button class="dab-icon" id="deskListBtn" type="button" aria-label="Список">▾</button>
+          <button class="dab-icon" id="deskListBtn" type="button" aria-label="Список"><svg class="ico sm"><use href="#i-chevron-down"></use></svg></button>
           <button class="dab-btn" id="deskAddBtn" aria-label="Добавить">⏎</button>
           <input type="date" id="deskDueDate" class="dab-date" />
         </div>
@@ -227,7 +236,7 @@
                 </button>
               </div>
               <div class="te-head-right">
-                <button class="icon-btn" id="tePin" title="Закрепить" aria-label="Закрепить">📌</button>
+                <button class="icon-btn" id="tePin" title="Закрепить" aria-label="Закрепить"><svg class="ico sm"><use href="#i-tag"></use></svg></button>
                 <button class="icon-btn" id="teClose" title="Закрыть" aria-label="Закрыть">×</button>
               </div>
             </div>
@@ -533,6 +542,9 @@
 
   </div>
 </div>
+
+<!-- small anchored popover (menus for list/section/priority/etc.) -->
+<div class="popover" id="popover" hidden></div>
 
 <script src="./app.js"></script>
 </body>
