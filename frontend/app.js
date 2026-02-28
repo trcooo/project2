@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v8");
+console.log("ClockTime build v9");
 
 const settings = (() => {
   try {
@@ -130,23 +130,43 @@ async function api(path, opt) {
     o.headers["Authorization"] = "Bearer " + auth.token;
   }
   const r = await fetch(API_BASE + path, o);
+
+  // IMPORTANT:
+  // Never read the response body twice (json() then text()).
+  // If the server returns a non‑JSON error body, json() consumes the stream,
+  // and calling text() afterwards throws: "body stream already read".
+  const ct = (r.headers.get("content-type") || "").toLowerCase();
+  const raw = await r.text();
+
   if (r.status === 401) {
     logout();
     throw new Error("Требуется вход");
   }
+
   if (!r.ok) {
-    let msg = "";
-    try {
-      const j = await r.json();
-      msg = j?.detail || JSON.stringify(j);
-    } catch {
-      msg = await r.text();
+    let msg = raw || "Ошибка запроса";
+    if (raw && (ct.includes("application/json") || raw.trim().startsWith("{"))) {
+      try {
+        const j = JSON.parse(raw);
+        msg = j?.detail || j?.message || msg;
+      } catch {
+        // keep raw
+      }
     }
-    throw new Error(msg || "Ошибка запроса");
+    throw new Error(msg);
   }
-  // 204
+
   if (r.status === 204) return null;
-  return r.json();
+  if (!raw) return null;
+
+  if (ct.includes("application/json") || raw.trim().startsWith("{") || raw.trim().startsWith("[")) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // fall through
+    }
+  }
+  return raw;
 }
 
 const apiAuthRegister = (p) => api("/api/auth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
@@ -1515,8 +1535,18 @@ function switchAuthTab(which) {
   const isLogin = which === "login";
   $("tabLogin")?.classList.toggle("active", isLogin);
   $("tabRegister")?.classList.toggle("active", !isLogin);
-  $("formLogin")?.toggleAttribute("hidden", !isLogin);
-  $("formRegister")?.toggleAttribute("hidden", isLogin);
+  // Be explicit: some browsers/extensions can behave oddly with [hidden] + flex.
+  // We set both the attribute AND inline display to guarantee only one form is visible.
+  const fl = $("formLogin");
+  const fr = $("formRegister");
+  if (fl) {
+    fl.hidden = !isLogin;
+    fl.style.display = isLogin ? "flex" : "none";
+  }
+  if (fr) {
+    fr.hidden = isLogin;
+    fr.style.display = isLogin ? "none" : "flex";
+  }
   $("loginError").hidden = true;
   $("regError").hidden = true;
 }
