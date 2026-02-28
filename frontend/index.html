@@ -46,6 +46,15 @@
   <symbol id="i-moon" viewBox="0 0 24 24">
     <path fill="currentColor" d="M21 14.5A8.5 8.5 0 0 1 9.5 3 7 7 0 1 0 21 14.5z"/>
   </symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M3 17.25V21h3.75L17.8 9.95l-3.75-3.75L3 17.25zm2.92 2.33H5v-.92l8.06-8.06.92.92L5.92 19.58zM20.7 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M6 7h12l-1 14H7L6 7zm3-3h6l1 2H8l1-2z"/>
+  </symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24">
+    <path fill="currentColor" d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/>
+  </symbol>
 </svg>
 
 <!-- Auth overlay -->
@@ -168,7 +177,8 @@
   <div class="main">
     <header class="topbar" id="topbar">
       <div class="tb-left">
-        <button class="icon-btn tb-only-mobile" id="btnMenu" aria-label="Меню">☰</button>
+        <button class="icon-btn tb-only-mobile" id="btnMenu" aria-label="Меню"><svg class="ico"><use href="#i-menu"></use></svg></button>
+        
         <div class="tb-title">
           <div class="title-main" id="pageTitle">Все</div>
         </div>
@@ -197,6 +207,23 @@
     <main class="container">
       <!-- TASKS -->
       <section id="viewTasks" class="view view-active">
+        <div class="tasks-layout" id="tasksLayout">
+          <div class="tasks-pane" id="tasksPane">
+        <div class="pane-head" id="paneHead">
+          <div class="ph-left">
+            <div class="ph-title" id="paneTitle">Все</div>
+            <div class="ph-count" id="paneCount">0</div>
+          </div>
+          <div class="ph-right">
+            <button class="icon-btn icon-btn-sm" id="paneAdd" aria-label="Добавить">＋</button>
+            <button class="icon-btn icon-btn-sm" id="paneMore" aria-label="Ещё">⋯</button>
+          </div>
+        </div>
+
+        <div class="pane-sub" id="paneSub">
+          <button class="link-btn" id="newSectionBtn" type="button">＋ Новая секция</button>
+        </div>
+
         <div class="desk-addbar" id="deskAddbar">
           <span class="dab-plus">＋</span>
           <input id="deskAddInput" placeholder='Добавить задачу в "Входящие"'>
@@ -213,6 +240,45 @@
         <button class="section-head muted" id="completedHead">Выполнено <span id="completedCount">0</span> <span id="completedChevron">▾</span></button>
         <ul class="tasks" id="completedTasks"></ul>
         <div class="empty" id="emptyState" hidden>Задач нет</div>
+          </div>
+
+          <!-- Desktop task editor (TickTick-like) -->
+          <aside class="task-editor" id="taskEditor" hidden>
+            <div class="te-head">
+              <div class="te-head-left">
+                <button class="te-check" id="teToggle" aria-label="Готово"></button>
+                <button class="te-date" id="teDueBtn" type="button" title="Дата">
+                  <svg class="ico sm"><use href="#i-calendar"></use></svg>
+                  <span id="teDueText">Без даты</span>
+                </button>
+              </div>
+              <div class="te-head-right">
+                <button class="icon-btn" id="tePin" title="Закрепить" aria-label="Закрепить">📌</button>
+                <button class="icon-btn" id="teClose" title="Закрыть" aria-label="Закрыть">×</button>
+              </div>
+            </div>
+
+            <div class="te-body">
+              <input class="te-title" id="teTitle" type="text" placeholder="Название…" maxlength="200" />
+              <textarea class="te-notes" id="teNotes" placeholder="Заметки…" spellcheck="false"></textarea>
+            </div>
+
+            <div class="te-foot">
+              <button class="te-pill" id="teListBtn" type="button" title="Список">
+                <svg class="ico sm"><use href="#i-inbox"></use></svg>
+                <span id="teListText">Входящие</span>
+              </button>
+
+              <div class="te-actions">
+                <button class="icon-btn" id="tePriority" title="Приоритет" aria-label="Приоритет"><svg class="ico sm"><use href="#i-flag"></use></svg></button>
+                <button class="icon-btn" id="teTags" title="Теги" aria-label="Теги"><svg class="ico sm"><use href="#i-tag"></use></svg></button>
+                <button class="icon-btn" id="teMore" title="Ещё" aria-label="Ещё">⋯</button>
+              </div>
+            </div>
+
+            <input type="date" id="teDueDate" class="te-date-input" />
+          </aside>
+        </div>
       </section>
 
       <!-- SEARCH -->

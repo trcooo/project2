@@ -16,6 +16,7 @@ const save = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 const $ = (id) => document.getElementById(id);
 const on = (el, ev, fn) => el && el.addEventListener(ev, fn);
 const isDesktop = () => window.matchMedia && window.matchMedia("(min-width: 900px)").matches;
+const isSplit = () => isDesktop() && window.matchMedia && window.matchMedia("(min-width: 1120px)").matches;
 
 function applyTheme() {
   const sysDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -158,6 +159,7 @@ const state = {
   folderCollapsed: new Set(_collapse.folders || []),
   doneCollapsed: true,
   openSwipeId: null,
+  selectedTaskId: null,
   editing: { listId: null, folderId: null, taskId: null },
   composer: { listId: null, dueDate: null, priority: 0 },
   system: { inboxId: null },
@@ -176,6 +178,7 @@ const iso = (d) => {
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 
 const MONTHS_RU = ["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
+const MONTHS_RU_SHORT = ["янв.","февр.","мар.","апр.","мая","июн.","июл.","авг.","сент.","окт.","нояб.","дек."];
 
 const fmtDueShort = (s) => {
   if (!s) return "";
@@ -595,7 +598,7 @@ function setupDrop() {
 // Task row
 function taskRow(t) {
   const li = document.createElement("li");
-  li.className = "task" + (t.completed ? " completed" : "");
+  li.className = "task" + (t.completed ? " completed" : "") + (state.selectedTaskId === t.id ? " selected" : "");
   li.dataset.id = t.id;
 
   const actions = document.createElement("div");
@@ -605,7 +608,7 @@ function taskRow(t) {
   ok.textContent = "✓";
   const del = document.createElement("button");
   del.className = "action-btn delete";
-  del.textContent = "🗑";
+  del.innerHTML = '<svg class="ico sm"><use href="#i-trash"></use></svg>';
   actions.appendChild(ok);
   actions.appendChild(del);
 
@@ -671,10 +674,10 @@ function taskRow(t) {
   right.className = "task-actions";
   const bE = document.createElement("button");
   bE.className = "small-btn";
-  bE.textContent = "✎";
+  bE.innerHTML = '<svg class="ico sm"><use href="#i-edit"></use></svg>';
   const bD = document.createElement("button");
   bD.className = "small-btn";
-  bD.textContent = "🗑";
+  bD.innerHTML = '<svg class="ico sm"><use href="#i-trash"></use></svg>';
   right.appendChild(bE);
   right.appendChild(bD);
 
@@ -717,11 +720,17 @@ function render() {
 
   empty.hidden = !(state.tasks.length === 0 && state.done.length === 0);
 
+  // pane header (TickTick-like)
+  if ($("paneTitle")) {
+    $("paneTitle").textContent = $("pageTitle")?.textContent || "";
+    $("paneCount").textContent = String(state.tasks.length);
+  }
+
   groupTasks(state.tasks).forEach((g) => {
     const sec = document.createElement("section");
     const head = document.createElement("button");
     head.className = "section-head";
-    head.textContent = `${g.title}`;
+    head.textContent = `${g.title} ${g.items.length}`;
     head.insertAdjacentText("beforeend", ` ${state.collapsed.has(g.key) ? "▸" : "▾"}`);
     head.addEventListener("click", () => {
       state.collapsed.has(g.key) ? state.collapsed.delete(g.key) : state.collapsed.add(g.key);
@@ -743,6 +752,9 @@ function render() {
   if (!state.doneCollapsed) state.done.forEach((t) => done.appendChild(taskRow(t)));
 
   setupDrop();
+
+  // keep desktop editor in sync
+  renderTaskEditor();
 }
 
 on($("completedHead"), "click", () => { state.doneCollapsed = !state.doneCollapsed; render(); });
@@ -827,6 +839,15 @@ async function loadMeta() {
 
 function openTask(t) {
   if (!t) return;
+  // Desktop split editor (TickTick-like)
+  if (isSplit()) {
+    state.selectedTaskId = t.id;
+    render();
+    renderTaskEditor();
+    return;
+  }
+
+  // Mobile / narrow: bottom sheet
   state.editing.taskId = t.id;
   $("taskTitle").value = t.title || "";
   $("taskNotes").value = t.notes || "";
@@ -838,6 +859,91 @@ function openTask(t) {
   $("btnTaskToggle").dataset.completed = t.completed ? "1" : "0";
   openSheet("taskBackdrop", "taskSheet");
   $("taskTitle").focus();
+}
+
+function setTasksSplitUI(on) {
+  const layout = $("tasksLayout");
+  if (layout) layout.classList.toggle("split", !!on);
+}
+
+function getTaskById(id) {
+  if (!id) return null;
+  return state.tasks.find((x) => x.id === id) || state.done.find((x) => x.id === id) || null;
+}
+
+function fmtDueLong(s) {
+  if (!s) return "Без даты";
+  const t = iso(new Date());
+  const tm = iso(addDays(new Date(), 1));
+  const [y, m, d] = s.split("-");
+  const mm = MONTHS_RU_SHORT[Math.max(0, Math.min(11, Number(m) - 1))] || m;
+  if (s === t) return `Сегодня, ${Number(d)} ${mm}`;
+  if (s === tm) return `Завтра, ${Number(d)} ${mm}`;
+  return `${Number(d)} ${mm}`;
+}
+
+let teTimer = null;
+async function patchSelectedTask(patch, { reload = false } = {}) {
+  const id = state.selectedTaskId;
+  if (!id) return;
+  await apiPatchTask(id, patch);
+  const applyLocal = (arr) => {
+    const i = arr.findIndex((x) => x.id === id);
+    if (i >= 0) arr[i] = { ...arr[i], ...patch };
+  };
+  applyLocal(state.tasks);
+  applyLocal(state.done);
+  if (reload) {
+    await refreshCounts();
+    await loadTasks();
+    return;
+  }
+  render();
+  renderTaskEditor();
+}
+
+function patchSelectedDebounced(patch, opts) {
+  clearTimeout(teTimer);
+  teTimer = setTimeout(() => patchSelectedTask(patch, opts).catch(() => {}), 450);
+}
+
+function closeTaskEditor() {
+  state.selectedTaskId = null;
+  setTasksSplitUI(false);
+  $("taskEditor") && ($("taskEditor").hidden = true);
+  render();
+}
+
+function renderTaskEditor() {
+  const ed = $("taskEditor");
+  if (!ed) return;
+  if (state.view !== "tasks") {
+    ed.hidden = true;
+    setTasksSplitUI(false);
+    return;
+  }
+  if (!isSplit() || !state.selectedTaskId) {
+    ed.hidden = true;
+    setTasksSplitUI(false);
+    return;
+  }
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) {
+    state.selectedTaskId = null;
+    ed.hidden = true;
+    setTasksSplitUI(false);
+    return;
+  }
+  ed.hidden = false;
+  setTasksSplitUI(true);
+
+  $("teTitle").value = t.title || "";
+  $("teNotes").value = t.notes || "";
+  $("teDueText").textContent = fmtDueLong(t.dueDate);
+  $("teDueDate").value = t.dueDate || "";
+  const list = state.lists.find((l) => l.id === t.listId) || state.lists.find((l) => l.systemKey === "inbox") || null;
+  $("teListText").textContent = list?.title || "Входящие";
+  $("teToggle").classList.toggle("done", !!t.completed);
 }
 
 // Composer
@@ -1209,6 +1315,69 @@ on($("compListBtn"), "click", () => {
 on($("pickBackdrop"), "click", () => closeSheet("pickBackdrop", "pickSheet"));
 on($("pickCancel"), "click", () => closeSheet("pickBackdrop", "pickSheet"));
 
+// desktop task editor (split)
+on($("teClose"), "click", closeTaskEditor);
+on($("teDueBtn"), "click", () => $("teDueDate")?.click());
+on($("teDueDate"), "change", async () => {
+  const v = $("teDueDate").value || null;
+  await patchSelectedTask({ dueDate: v }, { reload: true });
+});
+on($("teTitle"), "input", () => {
+  const v = $("teTitle").value.trim();
+  if (!v) return;
+  patchSelectedDebounced({ title: v }, { reload: false });
+});
+on($("teNotes"), "input", () => {
+  const v = $("teNotes").value.trim();
+  patchSelectedDebounced({ notes: v || null }, { reload: false });
+});
+on($("teToggle"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  await patchSelectedTask({ completed: !t.completed }, { reload: true });
+});
+on($("teListBtn"), "click", () => {
+  const id = state.selectedTaskId;
+  if (!id) return;
+  const pl = $("pickList");
+  pl.innerHTML = "";
+  state.lists.forEach((l) => {
+    const btn = document.createElement("button");
+    btn.className = "sheet-option";
+    btn.textContent = `${l.emoji || "📌"} ${l.title}`;
+    btn.onclick = async () => {
+      await patchSelectedTask({ listId: l.id }, { reload: true });
+      closeSheet("pickBackdrop", "pickSheet");
+    };
+    pl.appendChild(btn);
+  });
+  openSheet("pickBackdrop", "pickSheet");
+});
+on($("tePriority"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const next = ((Number(t.priority || 0) + 1) % 4);
+  await patchSelectedTask({ priority: next }, { reload: false });
+});
+on($("teTags"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const cur = (t.tags || []).map((x) => "#" + x).join(" ");
+  const raw = prompt("Теги (#tag #home)", cur);
+  if (raw === null) return;
+  const tags = parseTagsInput(raw);
+  await patchSelectedTask({ tags }, { reload: false });
+});
+on($("teMore"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  if (!confirm("Удалить задачу?")) return;
+  await apiDeleteTask(t.id);
+  closeTaskEditor();
+  await refreshCounts();
+  await loadTasks();
+});
+
 // task sheet
 on($("taskBackdrop"), "click", () => closeSheet("taskBackdrop", "taskSheet"));
 on($("btnTaskCancel"), "click", () => closeSheet("taskBackdrop", "taskSheet"));
@@ -1244,6 +1413,8 @@ on($("compInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault
 
 on($("deskAddBtn"), "click", addTaskDesktop);
 on($("deskAddInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addTaskDesktop(); } });
+on($("paneAdd"), "click", () => $("deskAddInput")?.focus());
+on($("newSectionBtn"), "click", () => alert("Секции — в разработке"));
 
 on($("searchInput"), "input", loadTasks);
 
@@ -1282,6 +1453,16 @@ on($("menuLogout"), "click", () => { $("accountMenu").hidden = true; logout(); }
 // settings modal
 on($("settingsBackdrop"), "click", closeSettings);
 on($("settingsClose"), "click", closeSettings);
+
+// keep split editor responsive
+window.addEventListener("resize", () => {
+  if (!isSplit()) {
+    $("taskEditor") && ($("taskEditor").hidden = true);
+    setTasksSplitUI(false);
+  } else {
+    renderTaskEditor();
+  }
+});
 
 // calendar controls
 on($("calPrev"), "click", async () => { state.calendarCursor = new Date(state.calendarCursor.getFullYear(), state.calendarCursor.getMonth() - 1, 1); state.calendarRangeKey = ""; await renderCalendar(); });

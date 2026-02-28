@@ -122,11 +122,72 @@ button,input,select,textarea{font:inherit}
 .search-ico{color:var(--muted);font-weight:900}
 
 /* Desktop add bar */
-.desk-addbar{display:none;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid var(--line);margin-top:12px}
+.desk-addbar{display:none;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid var(--line);margin-top:12px}
 .dab-plus{opacity:.65;font-weight:900}
 .desk-addbar input{flex:1;border:0;outline:none;background:transparent;color:var(--text);font-size:14px}
 .dab-btn{height:30px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);cursor:pointer;padding:0 10px}
 .dab-btn:hover{color:var(--text)}
+
+/* Tasks split layout (TickTick-like editor) */
+.tasks-layout{display:block}
+.tasks-pane{min-width:0}
+
+.pane-head{display:none;align-items:center;justify-content:space-between;margin-top:6px;padding:0 4px}
+.ph-left{display:flex;align-items:baseline;gap:10px;min-width:0}
+.ph-title{font-weight:950;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ph-count{font-weight:950;font-size:18px;color:rgba(232,232,232,.55)}
+:root[data-theme="light"] .ph-count{color:rgba(15,23,42,.45)}
+.ph-right{display:flex;align-items:center;gap:8px}
+.icon-btn.icon-btn-sm{width:34px;height:34px;border-radius:12px;font-weight:900}
+.pane-sub{display:none;margin-top:10px;padding:0 4px}
+.link-btn{border:0;background:transparent;color:var(--blue2);cursor:pointer;font-weight:900;padding:6px 0}
+.link-btn:hover{text-decoration:underline}
+
+@media (min-width: 900px){
+  .tasks-layout{display:flex;align-items:flex-start;gap:18px}
+  .tasks-pane{width:520px;max-width:520px}
+  .pane-head{display:flex}
+  .pane-sub{display:block}
+}
+
+/* Default (no split) list look: flat rows */
+#tasksLayout:not(.split) .tasks{gap:0}
+#tasksLayout:not(.split) .task{border-radius:0}
+#tasksLayout:not(.split) .task-card{background:transparent;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:12px 8px}
+#tasksLayout:not(.split) .task-card:hover{background:rgba(255,255,255,.03)}
+#tasksLayout:not(.split) .task:last-child .task-card{border-bottom:0}
+#tasksLayout:not(.split) .task-actions{opacity:0;pointer-events:none}
+#tasksLayout:not(.split) .task:hover .task-actions{opacity:1;pointer-events:auto}
+#tasksLayout:not(.split) .task.selected .task-card{background:rgba(47,123,255,.10)}
+
+/* Split mode list look: cards */
+#tasksLayout.split .tasks{gap:10px}
+#tasksLayout.split .task{border-radius:var(--radius)}
+#tasksLayout.split .task-card{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+#tasksLayout.split .task.selected .task-card{border-color:rgba(47,123,255,.55);box-shadow:0 0 0 1px rgba(47,123,255,.25) inset}
+
+/* Editor panel */
+.task-editor{display:none;min-width:0;flex:1;border:1px solid var(--line);border-radius:18px;background:rgba(0,0,0,.12);backdrop-filter:blur(14px);box-shadow:var(--shadow)}
+@media (min-width: 900px){
+  .task-editor{display:block;position:sticky;top:72px;height:calc(100vh - 110px)}
+}
+.task-editor[hidden]{display:none !important}
+.te-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--line)}
+.te-head-left{display:flex;align-items:center;gap:10px}
+.te-check{width:30px;height:30px;border-radius:10px;border:1px solid var(--line2);background:rgba(255,255,255,.03);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.te-check.done{border-color:rgba(47,123,255,.55);background:rgba(47,123,255,.14);color:var(--blue)}
+.te-check.done::after{content:"✓";font-weight:900}
+.te-date{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);border-radius:12px;padding:8px 10px;cursor:pointer;font-weight:900}
+.te-date span{opacity:.95}
+.te-body{padding:14px 14px 8px;display:flex;flex-direction:column;gap:10px;height:calc(100% - 110px);overflow:auto}
+.te-title{border:0;outline:none;background:transparent;color:var(--text);font-weight:950;font-size:22px;line-height:1.2}
+.te-notes{border:0;outline:none;background:transparent;color:rgba(232,232,232,.75);font-size:14px;line-height:1.5;min-height:220px;resize:none}
+:root[data-theme="light"] .te-notes{color:rgba(15,23,42,.65)}
+.te-foot{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-top:1px solid var(--line)}
+.te-pill{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--text);border-radius:14px;padding:10px 12px;cursor:pointer;font-weight:900;max-width:65%}
+.te-pill span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.te-actions{display:flex;align-items:center;gap:8px}
+.te-date-input{position:absolute;opacity:0;pointer-events:none}
 
 /* Task list */
 .section-head{margin-top:18px;width:100%;border:0;background:transparent;color:rgba(232,232,232,.65);font-weight:900;font-size:14px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:8px}
@@ -134,6 +195,8 @@ button,input,select,textarea{font:inherit}
 
 .tasks{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px}
 .task{position:relative;overflow:hidden;border-radius:var(--radius)}
+.task.completed{opacity:.75}
+.task.completed .task-title{opacity:.6;text-decoration:line-through}
 
 /* Swipe (mobile) */
 .swipe-actions{position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;padding:0 10px}
@@ -285,12 +348,7 @@ button,input,select,textarea{font:inherit}
   /* Desktop composer (like TickTick bottom bar) */
   .composer{display:flex;left:calc(var(--rail-w) + var(--sidebar-w) + 18px);transform:none;bottom:22px;width:calc(100% - var(--rail-w) - var(--sidebar-w) - 36px);max-width:980px;border-radius:18px;padding:10px 12px}
 
-  /* Desktop list: flat rows */
-  .tasks{gap:0}
-  .task{border-radius:0}
-  .task-card{border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;box-shadow:none;padding:10px 8px}
-  .task-card:hover{background:rgba(255,255,255,.03)}
-  .task-actions{display:none}
+  /* Desktop task tweaks */
   .swipe-actions{display:none}
   .task-card{touch-action:auto}
   .checkbox{width:16px;height:16px;border-radius:4px}
