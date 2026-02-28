@@ -3,14 +3,17 @@ import os, json
 from datetime import datetime, timezone, date
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from jose import jwt, JWTError
+from passlib.context import CryptContext
 from sqlalchemy import (
     create_engine, MetaData, Table, Column,
     String, Boolean, BigInteger, Integer, Text,
-    select, insert, update, delete, and_, case, text
+    select, insert, update, delete, and_, case, text, or_
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy import inspect
@@ -31,9 +34,58 @@ def get_engine() -> Engine:
 engine = get_engine()
 metadata = MetaData()
 
+# --- Auth / Users ---
+
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+bearer = HTTPBearer(auto_error=False)
+
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_ALG = "HS256"
+JWT_TTL_SECONDS = int(os.getenv("JWT_TTL_SECONDS", "2592000"))  # 30d
+
+def hash_password(pw: str) -> str:
+    return pwd_ctx.hash(pw)
+
+def verify_password(pw: str, pw_hash: str) -> bool:
+    try:
+        return pwd_ctx.verify(pw, pw_hash)
+    except Exception:
+        return False
+
+def create_token(user_id: str) -> str:
+    exp = now_ts() + JWT_TTL_SECONDS
+    return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALG)
+
+def require_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict:
+    if not creds or not creds.credentials:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    token = creds.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        uid = payload.get("sub")
+        if not uid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    with engine.connect() as conn:
+        u = conn.execute(select(users).where(users.c.id == uid)).mappings().first()
+    if not u:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return u
+
+users = Table(
+    "users", metadata,
+    Column("id", String, primary_key=True),
+    Column("email", String, nullable=False),
+    Column("password_hash", String, nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+)
+
 folders = Table(
     "folders", metadata,
     Column("id", String, primary_key=True),
+    Column("user_id", String, nullable=True),
     Column("title", String, nullable=False),
     Column("emoji", String, nullable=False, server_default="📁"),
     Column("sort_order", Integer, nullable=False, server_default="0"),
@@ -43,6 +95,8 @@ folders = Table(
 lists = Table(
     "lists", metadata,
     Column("id", String, primary_key=True),
+    Column("user_id", String, nullable=True),
+    Column("system_key", String, nullable=True),
     Column("title", String, nullable=False),
     Column("emoji", String, nullable=False, server_default="📌"),
     Column("sort_order", Integer, nullable=False, server_default="0"),
@@ -53,6 +107,7 @@ lists = Table(
 tasks = Table(
     "tasks", metadata,
     Column("id", String, primary_key=True),
+    Column("user_id", String, nullable=True),
     Column("title", String, nullable=False),
     Column("completed", Boolean, nullable=False, server_default="false"),
     Column("created_at", BigInteger, nullable=False),
@@ -69,14 +124,17 @@ tasks = Table(
 def now_ts() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp())
 
-def next_sort_order(table: Table, conn=None) -> int:
-    """Return next sort_order (increments by 10)."""
+def next_sort_order(table: Table, conn=None, user_id: str | None = None) -> int:
+    """Return next sort_order (increments by 10). If table has user_id, compute per-user."""
     close = False
     if conn is None:
         conn = engine.connect()
         close = True
     try:
-        r = conn.execute(select(table.c.sort_order).order_by(table.c.sort_order.desc())).first()
+        stmt = select(table.c.sort_order)
+        if user_id is not None and "user_id" in table.c:
+            stmt = stmt.where(table.c.user_id == user_id)
+        r = conn.execute(stmt.order_by(table.c.sort_order.desc())).first()
     finally:
         if close:
             conn.close()
@@ -144,12 +202,15 @@ def init_db():
     # lists migrations
     if insp.has_table("lists"):
         ensure_columns("lists", {
+            "user_id": "user_id TEXT",
+            "system_key": "system_key TEXT",
             "folder_id": "folder_id TEXT",
         })
 
     # tasks migrations (include core columns!)
     if insp.has_table("tasks"):
         ensure_columns("tasks", {
+            "user_id": "user_id TEXT",
             # core (must exist)
             "list_id": "list_id TEXT",
             "due_date": "due_date TEXT",
@@ -177,24 +238,55 @@ def init_db():
             except Exception:
                 pass
 
+    # folders migrations
+    if insp.has_table("folders"):
+        ensure_columns("folders", {
+            "user_id": "user_id TEXT",
+        })
+
+    # Users: best-effort unique email index (Postgres + SQLite)
+    if insp.has_table("users"):
+        with engine.begin() as conn:
+            try:
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email ON users(email)"))
+            except Exception:
+                pass
+
 init_db()
 
-def seed_defaults():
-    defaults_lists = [
-        ("inbox", "Входящие", "📥", 10, None),
-        ("welcome", "Добро пожаловать", "👋", 20, None),
-        ("work", "Работа", "💼", 30, None),
-        ("personal", "Личный", "🏠", 40, None),
+def ensure_user_defaults(conn, user_id: str) -> None:
+    """Create default lists for a user if missing."""
+    defaults = [
+        ("inbox", "Входящие", "📥", 10),
+        ("welcome", "Добро пожаловать", "👋", 20),
+        ("work", "Работа", "💼", 30),
+        ("personal", "Личный", "🏠", 40),
     ]
-    with engine.begin() as conn:
-        for lid, title, emoji, order, folder_id in defaults_lists:
-            if conn.execute(select(lists.c.id).where(lists.c.id == lid)).first():
-                continue
-            conn.execute(insert(lists).values(
-                id=lid, title=title, emoji=emoji, sort_order=order,
-                created_at=now_ts(), folder_id=folder_id
-            ))
-seed_defaults()
+    for key, title, emoji, order in defaults:
+        exists = conn.execute(
+            select(lists.c.id).where(and_(lists.c.user_id == user_id, lists.c.system_key == key))
+        ).first()
+        if exists:
+            continue
+        conn.execute(
+            insert(lists).values(
+                id=gen_id(),
+                user_id=user_id,
+                system_key=key,
+                title=title,
+                emoji=emoji,
+                sort_order=order,
+                created_at=now_ts(),
+                folder_id=None,
+            )
+        )
+
+def is_first_user(conn) -> bool:
+    try:
+        c = conn.execute(select(text("COUNT(*)")).select_from(users)).scalar_one()
+        return int(c) == 0
+    except Exception:
+        return True
 
 app = FastAPI(title="TickTick-like ToDo (v4-fixed)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -219,7 +311,7 @@ class ListCreate(BaseModel):
     folderId: Optional[str] = None
 
 class ListOut(BaseModel):
-    id: str; title: str; emoji: str; sortOrder: int; folderId: Optional[str] = None
+    id: str; title: str; emoji: str; sortOrder: int; folderId: Optional[str] = None; systemKey: Optional[str] = None
 
 class ListUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=60)
@@ -231,7 +323,7 @@ class ReorderSimple(BaseModel):
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
-    listId: str = Field(default="inbox")
+    listId: Optional[str] = Field(default=None)
     dueDate: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     priority: int = Field(default=0, ge=0, le=3)
@@ -260,7 +352,7 @@ class TaskOut(BaseModel):
     notes: Optional[str] = None
 
 def to_folder_out(r): return FolderOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]))
-def to_list_out(r): return ListOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]), folderId=r.get("folder_id"))
+def to_list_out(r): return ListOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]), folderId=r.get("folder_id"), systemKey=r.get("system_key"))
 def to_task_out(r): 
     return TaskOut(
         id=r["id"], title=r["title"], completed=bool(r["completed"]),
@@ -273,38 +365,134 @@ def to_task_out(r):
         notes=r.get("notes")
     )
 
-def ensure_list_exists(list_id: str):
-    with engine.connect() as conn:
-        if not conn.execute(select(lists.c.id).where(lists.c.id == list_id)).first():
-            raise HTTPException(status_code=400, detail=f"List not found: {list_id}")
+def inbox_list_id(conn, user_id: str) -> str:
+    row = conn.execute(
+        select(lists.c.id).where(and_(lists.c.user_id == user_id, lists.c.system_key == "inbox"))
+    ).first()
+    if row:
+        return row[0]
+    # Fallback for very old DBs where inbox id is literally 'inbox'
+    row2 = conn.execute(select(lists.c.id).where(and_(lists.c.user_id == user_id, lists.c.id == "inbox"))).first()
+    if row2:
+        return row2[0]
+    # Ensure defaults
+    ensure_user_defaults(conn, user_id)
+    row3 = conn.execute(
+        select(lists.c.id).where(and_(lists.c.user_id == user_id, lists.c.system_key == "inbox"))
+    ).first()
+    if row3:
+        return row3[0]
+    raise HTTPException(status_code=500, detail="Inbox list missing")
 
-def ensure_folder_exists(folder_id: str):
-    with engine.connect() as conn:
-        if not conn.execute(select(folders.c.id).where(folders.c.id == folder_id)).first():
-            raise HTTPException(status_code=400, detail=f"Folder not found: {folder_id}")
+def ensure_list_exists(conn, user_id: str, list_id: str):
+    if not conn.execute(select(lists.c.id).where(and_(lists.c.id == list_id, lists.c.user_id == user_id))).first():
+        raise HTTPException(status_code=400, detail=f"List not found")
+
+def ensure_folder_exists(conn, user_id: str, folder_id: str):
+    if not conn.execute(select(folders.c.id).where(and_(folders.c.id == folder_id, folders.c.user_id == user_id))).first():
+        raise HTTPException(status_code=400, detail=f"Folder not found")
+
+# --- Auth API ---
+
+class AuthRegister(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=6, max_length=200)
+
+class AuthLogin(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    createdAt: int
+
+class AuthOut(BaseModel):
+    token: str
+    user: UserOut
+
+def to_user_out(r) -> UserOut:
+    return UserOut(id=r["id"], email=r["email"], createdAt=int(r["created_at"]))
+
+@app.post("/api/auth/register", response_model=AuthOut)
+def register(payload: AuthRegister):
+    email = payload.email.strip().lower()
+    pw = payload.password
+    if "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Введите корректный email")
+    uid = gen_id()
+    with engine.begin() as conn:
+        # email unique check
+        if conn.execute(select(users.c.id).where(users.c.email == email)).first():
+            raise HTTPException(status_code=400, detail="Пользователь с таким email уже существует")
+
+        first = is_first_user(conn)
+        conn.execute(insert(users).values(id=uid, email=email, password_hash=hash_password(pw), created_at=now_ts()))
+
+        # If this is the first user, attach legacy data (rows with user_id NULL) to them.
+        if first:
+            try:
+                conn.execute(update(lists).where(lists.c.user_id.is_(None)).values(user_id=uid))
+                conn.execute(update(folders).where(folders.c.user_id.is_(None)).values(user_id=uid))
+                conn.execute(update(tasks).where(tasks.c.user_id.is_(None)).values(user_id=uid))
+            except Exception:
+                pass
+
+            # Backfill system_key for old fixed ids
+            try:
+                mapping = {"inbox": "inbox", "welcome": "welcome", "work": "work", "personal": "personal"}
+                for lid, sk in mapping.items():
+                    conn.execute(
+                        update(lists)
+                        .where(and_(lists.c.user_id == uid, lists.c.id == lid, lists.c.system_key.is_(None)))
+                        .values(system_key=sk)
+                    )
+            except Exception:
+                pass
+
+        ensure_user_defaults(conn, uid)
+        u = conn.execute(select(users).where(users.c.id == uid)).mappings().first()
+    return AuthOut(token=create_token(uid), user=to_user_out(u))
+
+@app.post("/api/auth/login", response_model=AuthOut)
+def login(payload: AuthLogin):
+    email = payload.email.strip().lower()
+    pw = payload.password
+    with engine.begin() as conn:
+        u = conn.execute(select(users).where(users.c.email == email)).mappings().first()
+        if not u:
+            raise HTTPException(status_code=400, detail="Неверный email или пароль")
+        if not verify_password(pw, u["password_hash"]):
+            raise HTTPException(status_code=400, detail="Неверный email или пароль")
+        ensure_user_defaults(conn, u["id"])
+    return AuthOut(token=create_token(u["id"]), user=to_user_out(u))
+
+@app.get("/api/auth/me", response_model=UserOut)
+def me(user=Depends(require_user)):
+    return to_user_out(user)
 
 @app.get("/api/health")
 def health(): return {"ok": True, "today": today_str()}
 
 @app.get("/api/folders", response_model=List[FolderOut])
-def get_folders():
-    stmt = select(folders).order_by(folders.c.sort_order.asc(), folders.c.created_at.asc())
+def get_folders(user=Depends(require_user)):
+    stmt = select(folders).where(folders.c.user_id == user["id"]).order_by(folders.c.sort_order.asc(), folders.c.created_at.asc())
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return [to_folder_out(r) for r in rows]
 
 @app.post("/api/folders", response_model=FolderOut)
-def create_folder(payload: FolderCreate):
+def create_folder(payload: FolderCreate, user=Depends(require_user)):
     title = payload.title.strip()
     if not title: raise HTTPException(status_code=400, detail="Title is empty")
     fid = gen_id(); emoji = payload.emoji.strip() or "📁"
     with engine.begin() as conn:
-        conn.execute(insert(folders).values(id=fid,title=title,emoji=emoji,sort_order=next_sort_order(folders, conn),created_at=now_ts()))
+        conn.execute(insert(folders).values(id=fid,user_id=user["id"],title=title,emoji=emoji,sort_order=next_sort_order(folders, conn, user["id"]),created_at=now_ts()))
         row = conn.execute(select(folders).where(folders.c.id==fid)).mappings().first()
     return to_folder_out(row)
 
 @app.patch("/api/folders/{folder_id}", response_model=FolderOut)
-def update_folder(folder_id: str, payload: FolderUpdate):
+def update_folder(folder_id: str, payload: FolderUpdate, user=Depends(require_user)):
     values = {}
     if payload.title is not None:
         t = payload.title.strip()
@@ -318,7 +506,7 @@ def update_folder(folder_id: str, payload: FolderUpdate):
         values["emoji"] = e
     if not values:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    stmt = update(folders).where(folders.c.id==folder_id).values(**values).returning(folders)
+    stmt = update(folders).where(and_(folders.c.id==folder_id, folders.c.user_id==user["id"])).values(**values).returning(folders)
     with engine.begin() as conn:
         row = conn.execute(stmt).mappings().first()
         if not row:
@@ -326,47 +514,47 @@ def update_folder(folder_id: str, payload: FolderUpdate):
     return to_folder_out(row)
 
 @app.delete("/api/folders/{folder_id}")
-def delete_folder(folder_id: str):
+def delete_folder(folder_id: str, user=Depends(require_user)):
     """Delete folder; lists stay, but get detached from the folder."""
     with engine.begin() as conn:
-        conn.execute(update(lists).where(lists.c.folder_id==folder_id).values(folder_id=None))
-        res = conn.execute(delete(folders).where(folders.c.id==folder_id))
+        conn.execute(update(lists).where(and_(lists.c.folder_id==folder_id, lists.c.user_id==user["id"])).values(folder_id=None))
+        res = conn.execute(delete(folders).where(and_(folders.c.id==folder_id, folders.c.user_id==user["id"])))
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Folder not found")
     return {"deleted": True}
 
 @app.post("/api/folders/reorder")
-def reorder_folders(payload: ReorderSimple):
+def reorder_folders(payload: ReorderSimple, user=Depends(require_user)):
     ordered = [x for x in payload.orderedIds if isinstance(x, str) and x.strip()]
     if not ordered:
         raise HTTPException(status_code=400, detail="orderedIds required")
     base = 10
     with engine.begin() as conn:
         for i, fid in enumerate(ordered):
-            conn.execute(update(folders).where(folders.c.id==fid).values(sort_order=base + i * 10))
+            conn.execute(update(folders).where(and_(folders.c.id==fid, folders.c.user_id==user["id"])).values(sort_order=base + i * 10))
     return {"ok": True}
 
 @app.get("/api/lists", response_model=List[ListOut])
-def get_lists():
-    stmt = select(lists).order_by(lists.c.sort_order.asc(), lists.c.created_at.asc())
+def get_lists(user=Depends(require_user)):
+    stmt = select(lists).where(lists.c.user_id == user["id"]).order_by(lists.c.sort_order.asc(), lists.c.created_at.asc())
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return [to_list_out(r) for r in rows]
 
 @app.post("/api/lists", response_model=ListOut)
-def create_list(payload: ListCreate):
+def create_list(payload: ListCreate, user=Depends(require_user)):
     title = payload.title.strip()
     if not title: raise HTTPException(status_code=400, detail="Title is empty")
     lid = gen_id(); emoji = payload.emoji.strip() or "📌"
     folder_id = payload.folderId.strip() if payload.folderId else None
-    if folder_id: ensure_folder_exists(folder_id)
     with engine.begin() as conn:
-        conn.execute(insert(lists).values(id=lid,title=title,emoji=emoji,sort_order=next_sort_order(lists, conn),created_at=now_ts(),folder_id=folder_id))
+        if folder_id: ensure_folder_exists(conn, user["id"], folder_id)
+        conn.execute(insert(lists).values(id=lid,user_id=user["id"],system_key=None,title=title,emoji=emoji,sort_order=next_sort_order(lists, conn, user["id"]),created_at=now_ts(),folder_id=folder_id))
         row = conn.execute(select(lists).where(lists.c.id==lid)).mappings().first()
     return to_list_out(row)
 
 @app.patch("/api/lists/{list_id}", response_model=ListOut)
-def update_list(list_id: str, payload: ListUpdate):
+def update_list(list_id: str, payload: ListUpdate, user=Depends(require_user)):
     values = {}
     if payload.title is not None:
         t = payload.title.strip()
@@ -381,11 +569,12 @@ def update_list(list_id: str, payload: ListUpdate):
     if payload.folderId is not None:
         fid = payload.folderId.strip() if payload.folderId else None
         if fid:
-            ensure_folder_exists(fid)
+            with engine.connect() as conn:
+                ensure_folder_exists(conn, user["id"], fid)
         values["folder_id"] = fid
     if not values:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    stmt = update(lists).where(lists.c.id==list_id).values(**values).returning(lists)
+    stmt = update(lists).where(and_(lists.c.id==list_id, lists.c.user_id==user["id"])).values(**values).returning(lists)
     with engine.begin() as conn:
         row = conn.execute(stmt).mappings().first()
         if not row:
@@ -393,33 +582,39 @@ def update_list(list_id: str, payload: ListUpdate):
     return to_list_out(row)
 
 @app.delete("/api/lists/{list_id}")
-def delete_list(list_id: str):
+def delete_list(list_id: str, user=Depends(require_user)):
     """Delete list; tasks are moved to inbox to avoid data loss."""
-    if list_id == "inbox":
-        raise HTTPException(status_code=400, detail="Cannot delete inbox")
     with engine.begin() as conn:
-        conn.execute(update(tasks).where(tasks.c.list_id==list_id).values(list_id="inbox", updated_at=now_ts()))
-        res = conn.execute(delete(lists).where(lists.c.id==list_id))
+        # Prevent deleting inbox for this user
+        sk = conn.execute(select(lists.c.system_key).where(and_(lists.c.id == list_id, lists.c.user_id == user["id"]))).scalar_one_or_none()
+        if sk == "inbox" or list_id == inbox_list_id(conn, user["id"]):
+            raise HTTPException(status_code=400, detail="Cannot delete inbox")
+
+        inbox_id = inbox_list_id(conn, user["id"])
+        conn.execute(update(tasks).where(and_(tasks.c.list_id==list_id, tasks.c.user_id==user["id"])).values(list_id=inbox_id, updated_at=now_ts()))
+        res = conn.execute(delete(lists).where(and_(lists.c.id==list_id, lists.c.user_id==user["id"])))
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="List not found")
     return {"deleted": True}
 
 @app.post("/api/lists/reorder")
-def reorder_lists(payload: ReorderSimple):
+def reorder_lists(payload: ReorderSimple, user=Depends(require_user)):
     ordered = [x for x in payload.orderedIds if isinstance(x, str) and x.strip()]
     if not ordered:
         raise HTTPException(status_code=400, detail="orderedIds required")
     base = 10
     with engine.begin() as conn:
         for i, lid in enumerate(ordered):
-            conn.execute(update(lists).where(lists.c.id==lid).values(sort_order=base + i * 10))
+            conn.execute(update(lists).where(and_(lists.c.id==lid, lists.c.user_id==user["id"])).values(sort_order=base + i * 10))
     return {"ok": True}
 
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=None, due: Optional[str]=None,
               due_from: Optional[str]=None, due_to: Optional[str]=None, q: Optional[str]=None,
-              tag: Optional[str]=None, priority: Optional[int]=None):
+              tag: Optional[str]=None, priority: Optional[int]=None, user=Depends(require_user)):
     conds=[]
+    # Always filter by user
+    conds.append(tasks.c.user_id == user["id"])
     if filter=="active": conds.append(tasks.c.completed.is_(False))
     elif filter=="completed": conds.append(tasks.c.completed.is_(True))
     if list_id: conds.append(tasks.c.list_id==list_id)
@@ -455,29 +650,35 @@ def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=No
     return [to_task_out(r) for r in rows]
 
 @app.post("/api/tasks", response_model=TaskOut)
-def create_task(payload: TaskCreate):
+def create_task(payload: TaskCreate, user=Depends(require_user)):
     title = payload.title.strip()
     if not title: raise HTTPException(status_code=400, detail="Title is empty")
-    list_id = (payload.listId or "inbox").strip() or "inbox"
-    ensure_list_exists(list_id)
-    due = validate_date_str(payload.dueDate)
-    tid = gen_id(); ts = now_ts()
-    order_index = ts*1000
-    stmt = insert(tasks).values(
-        id=tid,title=title,completed=False,created_at=ts,updated_at=ts,completed_at=None,
-        list_id=list_id,due_date=due,order_index=order_index,
-        priority=int(payload.priority or 0),
-        notes=(payload.notes.strip() if payload.notes else None),
-        tags_json=dumps_tags(payload.tags)
-    ).returning(tasks)
     with engine.begin() as conn:
+        if payload.listId:
+            list_id = payload.listId.strip()
+            if not list_id:
+                raise HTTPException(status_code=400, detail="listId is empty")
+            ensure_list_exists(conn, user["id"], list_id)
+        else:
+            list_id = inbox_list_id(conn, user["id"])
+
+        due = validate_date_str(payload.dueDate)
+        tid = gen_id(); ts = now_ts()
+        order_index = ts*1000
+        stmt = insert(tasks).values(
+            id=tid,user_id=user["id"],title=title,completed=False,created_at=ts,updated_at=ts,completed_at=None,
+            list_id=list_id,due_date=due,order_index=order_index,
+            priority=int(payload.priority or 0),
+            notes=(payload.notes.strip() if payload.notes else None),
+            tags_json=dumps_tags(payload.tags)
+        ).returning(tasks)
         row = conn.execute(stmt).mappings().first()
     return to_task_out(row)
 
 @app.patch("/api/tasks/{task_id}", response_model=TaskOut)
-def update_task(task_id: str, payload: TaskUpdate):
+def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
     with engine.connect() as conn:
-        cur = conn.execute(select(tasks).where(tasks.c.id==task_id)).mappings().first()
+        cur = conn.execute(select(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"]))).mappings().first()
     if not cur: raise HTTPException(status_code=404, detail="Task not found")
     values={}
     if payload.title is not None:
@@ -491,35 +692,38 @@ def update_task(task_id: str, payload: TaskUpdate):
     if payload.listId is not None:
         lid = payload.listId.strip()
         if not lid: raise HTTPException(status_code=400, detail="listId is empty")
-        ensure_list_exists(lid); values["list_id"]=lid
+        with engine.connect() as conn:
+            ensure_list_exists(conn, user["id"], lid)
+        values["list_id"]=lid
     if payload.dueDate is not None: values["due_date"]=validate_date_str(payload.dueDate)
     if payload.tags is not None: values["tags_json"]=dumps_tags(payload.tags)
     if payload.priority is not None: values["priority"]=int(payload.priority)
     if payload.notes is not None: values["notes"]=payload.notes.strip() if payload.notes else None
     if not values: raise HTTPException(status_code=400, detail="Nothing to update")
     values["updated_at"]=now_ts()
-    stmt = update(tasks).where(tasks.c.id==task_id).values(**values).returning(tasks)
+    stmt = update(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])).values(**values).returning(tasks)
     with engine.begin() as conn:
         row = conn.execute(stmt).mappings().first()
     return to_task_out(row)
 
 @app.post("/api/tasks/reorder")
-def reorder_tasks(payload: ReorderPayload):
+def reorder_tasks(payload: ReorderPayload, user=Depends(require_user)):
     list_id = payload.listId.strip()
     if not list_id: raise HTTPException(status_code=400, detail="listId required")
-    ensure_list_exists(list_id)
+    with engine.connect() as conn:
+        ensure_list_exists(conn, user["id"], list_id)
     ordered=[x for x in payload.orderedIds if isinstance(x,str) and x.strip()]
     if not ordered: raise HTTPException(status_code=400, detail="orderedIds required")
     base = now_ts()*1000; step=10
     with engine.begin() as conn:
         for i, tid in enumerate(ordered):
-            conn.execute(update(tasks).where(and_(tasks.c.id==tid, tasks.c.list_id==list_id)).values(order_index=base+i*step))
+            conn.execute(update(tasks).where(and_(tasks.c.id==tid, tasks.c.list_id==list_id, tasks.c.user_id==user["id"])).values(order_index=base+i*step))
     return {"ok": True}
 
 @app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: str):
+def delete_task(task_id: str, user=Depends(require_user)):
     with engine.begin() as conn:
-        res = conn.execute(delete(tasks).where(tasks.c.id==task_id))
+        res = conn.execute(delete(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])))
         if res.rowcount==0: raise HTTPException(status_code=404, detail="Task not found")
     return {"deleted": True}
 

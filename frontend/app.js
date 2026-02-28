@@ -1,23 +1,25 @@
 const SETTINGS_KEY="tt.settings.v4";
 const COLLAPSE_KEY="tt.collapse.v1";
 const SUMMARY_KEY="tt.summary.html.v1";
+const TOKEN_KEY="tt.auth.token.v1";
+const USER_KEY="tt.auth.user.v1";
 
 const settings = (() => {
   try {
-    return { sort: "due", theme: "auto", ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")) };
+    return { sort: "due", theme: "dark", ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")) };
   } catch {
-    return { sort: "due", theme: "auto" };
+    return { sort: "due", theme: "dark" };
   }
 })();
 const save = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 
 const $ = (id) => document.getElementById(id);
 const on = (el, ev, fn) => el && el.addEventListener(ev, fn);
-const isDesktop = () => window.matchMedia && window.matchMedia("(min-width: 1024px)").matches;
+const isDesktop = () => window.matchMedia && window.matchMedia("(min-width: 900px)").matches;
 
 function applyTheme() {
   const sysDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const resolved = settings.theme === "auto" ? (sysDark ? "dark" : "light") : settings.theme;
+  const resolved = settings.theme === "auto" ? (sysDark ? "dark" : "light") : (settings.theme || "dark");
 
   // Default CSS is dark; light uses data-theme="light"
   if (resolved === "light") document.documentElement.setAttribute("data-theme", "light");
@@ -26,10 +28,11 @@ function applyTheme() {
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "dark" ? "#141414" : "#eef1f6");
 }
 
-function cycleTheme() {
-  settings.theme = settings.theme === "auto" ? "dark" : (settings.theme === "dark" ? "light" : "auto");
+function toggleTheme() {
+  settings.theme = (settings.theme === "light") ? "dark" : "light";
   save();
   applyTheme();
+  updateThemeIcon();
 }
 
 applyTheme();
@@ -41,13 +44,85 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }
 
+// Auth
+let auth = (() => {
+  const token = localStorage.getItem(TOKEN_KEY) || "";
+  let user = null;
+  try { user = JSON.parse(localStorage.getItem(USER_KEY) || "null"); } catch { user = null; }
+  return { token, user };
+})();
+
+function setAuth(token, user) {
+  auth = { token, user };
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+  if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+  else localStorage.removeItem(USER_KEY);
+  updateAccountUI();
+}
+
+function logout() {
+  setAuth("", null);
+  showAuth();
+}
+
+function showAuth() {
+  $("auth").hidden = false;
+  $("appShell").style.filter = "blur(6px)";
+}
+function hideAuth() {
+  $("auth").hidden = true;
+  $("appShell").style.filter = "";
+}
+
+function updateAccountUI() {
+  const email = auth.user?.email || "";
+  const initial = email ? email.trim()[0]?.toUpperCase() : "●";
+  if ($("btnAccount")) $("btnAccount").textContent = initial || "●";
+  // settings modal static demo email
+  document.querySelectorAll(".modal-content .muted").forEach((el) => {
+    if (el.textContent === "demo@local" && email) el.textContent = email;
+  });
+}
+
+function updateThemeIcon() {
+  const use = $("themeIcon")?.querySelector?.("use");
+  if (!use) return;
+  use.setAttribute("href", settings.theme === "light" ? "#i-sun" : "#i-moon");
+}
+updateThemeIcon();
+
 // API
 const API_BASE = "";
 async function api(path, opt) {
-  const r = await fetch(API_BASE + path, opt);
-  if (!r.ok) throw new Error(await r.text());
+  const o = opt ? { ...opt } : {};
+  o.headers = { ...(o.headers || {}) };
+  if (path.startsWith("/api/") && !path.startsWith("/api/auth/") && auth.token) {
+    o.headers["Authorization"] = "Bearer " + auth.token;
+  }
+  const r = await fetch(API_BASE + path, o);
+  if (r.status === 401) {
+    logout();
+    throw new Error("Требуется вход");
+  }
+  if (!r.ok) {
+    let msg = "";
+    try {
+      const j = await r.json();
+      msg = j?.detail || JSON.stringify(j);
+    } catch {
+      msg = await r.text();
+    }
+    throw new Error(msg || "Ошибка запроса");
+  }
+  // 204
+  if (r.status === 204) return null;
   return r.json();
 }
+
+const apiAuthRegister = (p) => api("/api/auth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+const apiAuthLogin = (p) => api("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+const apiAuthMe = () => api("/api/auth/me");
 
 const apiGetFolders = () => api("/api/folders");
 const apiCreateFolder = (p) => api("/api/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
@@ -84,7 +159,8 @@ const state = {
   doneCollapsed: true,
   openSwipeId: null,
   editing: { listId: null, folderId: null, taskId: null },
-  composer: { listId: "inbox", dueDate: null, priority: 0 },
+  composer: { listId: null, dueDate: null, priority: 0 },
+  system: { inboxId: null },
   calendarCursor: new Date(),
   calendarTasks: [],
   calendarRangeKey: "",
@@ -176,9 +252,7 @@ function applyLayout() {
   $("rightPanel").hidden = state.view !== "summary";
 
   // Mobile composer
-  if (!isDesktop()) {
-    $("composer").style.display = state.view === "tasks" ? "flex" : "none";
-  }
+  $("composer").style.display = state.view === "tasks" ? "flex" : "none";
 
   // Active rail
   document.querySelectorAll(".rail-item[data-module]").forEach((b) => {
@@ -256,7 +330,7 @@ function updatePageTitle() {
 }
 
 function updateAddPlaceholder() {
-  const listId = state.activeKind === "list" ? state.activeId : (state.composer.listId || "inbox");
+  const listId = state.activeKind === "list" ? state.activeId : (state.composer.listId || state.system.inboxId);
   const list = state.lists.find((l) => l.id === listId);
   const name = list?.title || "Входящие";
   const el = $("deskAddInput");
@@ -295,7 +369,7 @@ function renderLists() {
   const grouped = new Map();
   for (const l of state.lists) {
     // Inbox is shown in smart nav; don't duplicate in lists section
-    if (l.id === "inbox") continue;
+    if (l.systemKey === "inbox" || l.id === state.system.inboxId || l.id === "inbox") continue;
 
     const k = l.folderId || "";
     if (!grouped.has(k)) grouped.set(k, []);
@@ -689,7 +763,10 @@ async function loadTasks() {
   if (state.activeKind === "smart") {
     if (state.activeId === "today") { base.due = today; done.due = today; }
     if (state.activeId === "next7") { base.due_from = today; base.due_to = nextTo; done.due_from = today; done.due_to = nextTo; }
-    if (state.activeId === "inbox") { base.list_id = "inbox"; done.list_id = "inbox"; }
+    if (state.activeId === "inbox") {
+      const inboxId = state.system.inboxId;
+      if (inboxId) { base.list_id = inboxId; done.list_id = inboxId; }
+    }
   } else {
     base.list_id = state.activeId;
     done.list_id = state.activeId;
@@ -732,12 +809,15 @@ async function refreshCounts() {
   $("countAll").textContent = String(all.length);
   $("countToday").textContent = String(cToday);
   $("countNext7").textContent = String(cNext7);
-  $("countInbox").textContent = String(byList["inbox"] || 0);
+  $("countInbox").textContent = String(byList[state.system.inboxId] || 0);
 }
 
 async function loadMeta() {
   state.folders = await apiGetFolders();
   state.lists = await apiGetLists();
+  // resolve system lists
+  state.system.inboxId = (state.lists.find((l) => l.systemKey === "inbox")?.id) || (state.lists.find((l) => l.id === "inbox")?.id) || (state.lists[0]?.id || null);
+  if (!state.composer.listId) state.composer.listId = state.system.inboxId;
   renderLists();
   renderFolderSelect();
   renderEditListFolderSelect();
@@ -752,7 +832,7 @@ function openTask(t) {
   $("taskNotes").value = t.notes || "";
   $("taskDueDate").value = t.dueDate || "";
   $("taskTags").value = (t.tags || []).map((x) => "#" + x).join(" ");
-  $("taskListSelect").value = t.listId || "inbox";
+  $("taskListSelect").value = t.listId || state.system.inboxId || "";
   document.querySelectorAll("#taskPrio .prio-btn").forEach((b) => b.classList.toggle("active", Number(b.dataset.p) === Number(t.priority || 0)));
   $("btnTaskToggle").textContent = t.completed ? "Вернуть" : "Готово";
   $("btnTaskToggle").dataset.completed = t.completed ? "1" : "0";
@@ -768,7 +848,8 @@ async function addTaskFromRaw(raw, explicitListId = null, explicitDue = null, ex
   let due = explicitDue ?? state.composer.dueDate;
   if (state.activeKind === "smart" && state.activeId === "today" && !due) due = iso(new Date());
 
-  const listId = explicitListId ?? (state.activeKind === "list" ? state.activeId : (state.activeId === "inbox" ? "inbox" : (state.composer.listId || "inbox")));
+  const inboxId = state.system.inboxId;
+  const listId = explicitListId ?? (state.activeKind === "list" ? state.activeId : (state.activeId === "inbox" ? inboxId : (state.composer.listId || inboxId)));
   const priority = p.priority ?? (explicitPriority ?? state.composer.priority);
 
   await apiCreateTask({ title: p.title, listId, dueDate: due || null, tags: p.tags, priority, notes: null });
@@ -790,7 +871,8 @@ async function addTask() {
 async function addTaskDesktop() {
   const raw = $("deskAddInput").value.trim();
   if (!raw) return;
-  await addTaskFromRaw(raw, state.activeKind === "list" ? state.activeId : (state.activeId === "inbox" ? "inbox" : "inbox"));
+  const inboxId = state.system.inboxId;
+  await addTaskFromRaw(raw, state.activeKind === "list" ? state.activeId : (state.activeId === "inbox" ? inboxId : inboxId));
   $("deskAddInput").value = "";
 }
 
@@ -865,7 +947,7 @@ async function renderCalendar() {
       const ev = document.createElement("div");
       ev.className = "cal-event";
       const list = state.lists.find((l) => l.id === t.listId);
-      const col = colorForList(t.listId || "inbox");
+      const col = colorForList(t.listId || state.system.inboxId || "inbox");
       ev.style.borderLeftColor = col;
       ev.style.background = "rgba(255,255,255,.05)";
       ev.textContent = t.title;
@@ -1140,7 +1222,7 @@ on($("taskForm"), "submit", async (e) => {
   const title = $("taskTitle").value.trim();
   if (!title) return;
   const notes = $("taskNotes").value.trim() || null;
-  const listId = $("taskListSelect").value || "inbox";
+  const listId = $("taskListSelect").value || state.system.inboxId;
   const dueDate = $("taskDueDate").value || null;
   const tags = parseTagsInput($("taskTags").value);
   const prioBtn = [...document.querySelectorAll("#taskPrio .prio-btn")].find((b) => b.classList.contains("active"));
@@ -1192,9 +1274,10 @@ on($("btnRailSettings"), "click", openSettings);
 
 // account menu actions
 on($("menuSettings"), "click", () => { $("accountMenu").hidden = true; openSettings(); });
+on($("menuTheme"), "click", () => { $("accountMenu").hidden = true; toggleTheme(); });
 on($("menuStats"), "click", () => { $("accountMenu").hidden = true; alert("Статистика — заглушка"); });
 on($("menuPremium"), "click", () => { $("accountMenu").hidden = true; alert("Премиум — заглушка"); });
-on($("menuLogout"), "click", () => { $("accountMenu").hidden = true; alert("Выход — заглушка"); });
+on($("menuLogout"), "click", () => { $("accountMenu").hidden = true; logout(); });
 
 // settings modal
 on($("settingsBackdrop"), "click", closeSettings);
@@ -1212,14 +1295,82 @@ window.addEventListener("resize", () => {
   updateAddPlaceholder();
 });
 
-// Boot
-(async () => {
+// Auth UI
+function switchAuthTab(which) {
+  const isLogin = which === "login";
+  $("tabLogin")?.classList.toggle("active", isLogin);
+  $("tabRegister")?.classList.toggle("active", !isLogin);
+  $("formLogin")?.toggleAttribute("hidden", !isLogin);
+  $("formRegister")?.toggleAttribute("hidden", isLogin);
+  $("loginError").hidden = true;
+  $("regError").hidden = true;
+}
+on($("tabLogin"), "click", () => switchAuthTab("login"));
+on($("tabRegister"), "click", () => switchAuthTab("register"));
+
+on($("formLogin"), "submit", async (e) => {
+  e.preventDefault();
+  $("loginError").hidden = true;
+  try {
+    const email = $("loginEmail").value.trim();
+    const password = $("loginPassword").value;
+    const res = await apiAuthLogin({ email, password });
+    setAuth(res.token, res.user);
+    hideAuth();
+    await startApp();
+  } catch (err) {
+    $("loginError").textContent = err.message || String(err);
+    $("loginError").hidden = false;
+  }
+});
+
+on($("formRegister"), "submit", async (e) => {
+  e.preventDefault();
+  $("regError").hidden = true;
+  try {
+    const email = $("regEmail").value.trim();
+    const p1 = $("regPassword").value;
+    const p2 = $("regPassword2").value;
+    if (p1 !== p2) throw new Error("Пароли не совпадают");
+    const res = await apiAuthRegister({ email, password: p1 });
+    setAuth(res.token, res.user);
+    hideAuth();
+    await startApp();
+  } catch (err) {
+    $("regError").textContent = err.message || String(err);
+    $("regError").hidden = false;
+  }
+});
+
+let _started = false;
+async function startApp() {
+  if (_started) return;
+  _started = true;
   try {
     await loadMeta();
     await refreshCounts();
     setActive("smart", "all");
     applyLayout();
   } catch (e) {
+    _started = false;
     alert("Ошибка: " + (e.message || e));
+  }
+}
+
+// Boot (requires auth)
+(async () => {
+  try {
+    if (!auth.token) {
+      showAuth();
+      switchAuthTab("login");
+      return;
+    }
+    // validate token
+    const me = await apiAuthMe();
+    setAuth(auth.token, me);
+    hideAuth();
+    await startApp();
+  } catch {
+    logout();
   }
 })();
