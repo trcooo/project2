@@ -5,13 +5,25 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v20-ui-auth");
+console.log("ClockTime build v21-ui");
 
 const settings = (() => {
+  const defaults = {
+    sort: "due",
+    theme: "dark",
+    weekStart: "mon",           // mon|sun
+    timeFormat: "24",           // 24|12
+    denseUI: true,               // closer to TickTick list rows
+    showHints: true,
+    modules: { calendar: true, search: true, summary: true },
+  };
   try {
-    return { sort: "due", theme: "dark", ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")) };
+    const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    const merged = { ...defaults, ...raw };
+    merged.modules = { ...defaults.modules, ...(raw.modules || {}) };
+    return merged;
   } catch {
-    return { sort: "due", theme: "dark" };
+    return defaults;
   }
 })();
 const save = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -97,6 +109,8 @@ function toggleTheme() {
 }
 
 applyTheme();
+document.body.dataset.dense = (settings.denseUI !== false) ? '1' : '0';
+document.body.dataset.hints = (settings.showHints !== false) ? '1' : '0';
 window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", () => {
   if (settings.theme === "auto") applyTheme();
 });
@@ -348,10 +362,12 @@ const fmtDueShort = (s) => {
   if (!s) return "";
   const t = iso(new Date());
   const tm = iso(addDays(new Date(), 1));
+  const yd = iso(addDays(new Date(), -1));
   if (s === t) return "Сегодня";
   if (s === tm) return "Завтра";
-  const [y, m, d] = s.split("-");
-  return `${d}.${m}`;
+  if (s === yd) return "Вчера";
+  const [yy, mm, dd] = s.split("-");
+  return `${dd}.${mm}`;
 };
 
 const bucket = (s) => {
@@ -360,6 +376,7 @@ const bucket = (s) => {
   const tm = iso(addDays(new Date(), 1));
   if (s === t) return "Сегодня";
   if (s === tm) return "Завтра";
+  if (s < t) return "Просрочено";
   return "Позже";
 };
 
@@ -393,6 +410,8 @@ function applyLayout() {
   document.body.dataset.module = state.module;
   document.body.dataset.view = state.view;
 
+  applyModules();
+
   // Sidebar behavior
   if (isDesktop()) {
     $("drawerBackdrop").hidden = true;
@@ -419,8 +438,8 @@ function applyLayout() {
   // Right panel
   $("rightPanel").hidden = state.view !== "summary";
 
-  // Mobile composer
-  $("composer").style.display = state.view === "tasks" ? "flex" : "none";
+  // Mobile composer only (desktop uses top add bar like TickTick)
+  $("composer").style.display = (!isDesktop() && state.view === "tasks") ? "flex" : "none";
 
   // Active rail
   document.querySelectorAll(".rail-item[data-module]").forEach((b) => {
@@ -431,6 +450,26 @@ function applyLayout() {
   if (state.view === "calendar") {
     $("pageTitle").textContent = MONTHS_RU[state.calendarCursor.getMonth()];
     $("calTitle").textContent = MONTHS_RU[state.calendarCursor.getMonth()];
+  }
+
+  // Pane header/sub only for list view on desktop (closer to TickTick)
+  if ($("paneHead")) $("paneHead").hidden = !(isDesktop() && state.view === 'tasks' && state.activeKind === 'list');
+  if ($("paneSub")) $("paneSub").hidden = !(isDesktop() && state.view === 'tasks' && state.activeKind === 'list');
+}
+
+function applyModules() {
+  const mods = settings.modules || { calendar: true, search: true, summary: true };
+  // rail
+  document.querySelectorAll('.rail-item[data-module="calendar"]').forEach((b) => b.hidden = !mods.calendar);
+  document.querySelectorAll('.rail-item[data-module="search"]').forEach((b) => b.hidden = !mods.search);
+  // drawer smart items
+  document.querySelectorAll('.drawer-item[data-kind="smart"][data-id="summary"]').forEach((b) => b.hidden = !mods.summary);
+  // right panel
+  if (!mods.summary && state.view === 'summary') {
+    // fall back to tasks if summary disabled
+    state.activeId = 'all';
+    state.activeKind = 'smart';
+    state.view = 'tasks';
   }
 }
 
@@ -508,9 +547,9 @@ function updateAddPlaceholder() {
       const sid = state.composer.sectionId;
       const sec = (state.sections || []).find((s) => s.id === sid) || null;
       const secName = sec?.title || 'секцию';
-      el.placeholder = `+ Добавить задачу в ${secName}`;
+      el.placeholder = `+ Добавить задачу в "${name}" / ${secName}`;
     } else {
-      el.placeholder = "+ Добавить задачу";
+      el.placeholder = `+ Добавить задачу в "${name}"`;
     }
   }
   const lb = $("deskListBtn");
@@ -1057,6 +1096,11 @@ function taskRow(t) {
     const rd = document.createElement("span");
     rd.className = "rm-due";
     rd.textContent = dueTxt || "";
+
+    // due styling like TickTick (overdue red, today blue)
+    const today = iso(new Date());
+    if (t.dueDate && t.dueDate < today) rd.classList.add('due-over');
+    if (t.dueDate && t.dueDate === today) rd.classList.add('due-today');
     due.appendChild(rn);
     if (dueTxt) {
       due.appendChild(document.createTextNode(" "));
@@ -1104,7 +1148,7 @@ function groupTasks(ts) {
   if (settings.sort === "manual") return [{ key: "all", title: "Все", items: ts }];
   const m = new Map();
   ts.forEach((t) => { const k = bucket(t.dueDate); if (!m.has(k)) m.set(k, []); m.get(k).push(t); });
-  const order = ["Сегодня", "Завтра", "Позже", "Без даты"];
+  const order = ["Просрочено", "Сегодня", "Завтра", "Позже", "Без даты"];
   return order.filter((k) => m.has(k)).map((k) => ({ key: k, title: k, items: m.get(k) }));
 }
 
@@ -1240,8 +1284,14 @@ function render() {
       const sec = document.createElement('section');
       const head = document.createElement('button');
       head.className = 'section-head';
-      head.textContent = `${g.title} ${g.items.length}`;
-      head.insertAdjacentText('beforeend', ` ${state.collapsed.has(g.key) ? '▸' : '▾'}`);
+      const chev = state.collapsed.has(g.key)
+        ? '<svg class="ico sm"><use href="#i-chevron-right"></use></svg>'
+        : '<svg class="ico sm"><use href="#i-chevron-down"></use></svg>';
+      head.innerHTML = `
+        <span class="sh-chev">${chev}</span>
+        <span class="sh-title">${g.title}</span>
+        <span class="sh-count">${g.items.length}</span>
+      `;
       head.addEventListener('click', () => {
         state.collapsed.has(g.key) ? state.collapsed.delete(g.key) : state.collapsed.add(g.key);
         saveCollapse();
@@ -1563,6 +1613,13 @@ async function renderCalendar() {
 
   const todayIso = iso(new Date());
 
+  // Week header labels respect settings.weekStart
+  const ws = (settings.weekStart || 'mon') === 'sun' ? 0 : 1;
+  const labels = ws === 0
+    ? ['Вск.','Пон.','Втр.','Срд.','Чтв.','Птн.','Сбт.']
+    : ['Пон.','Втр.','Срд.','Чтв.','Птн.','Сбт.','Вск.'];
+  document.querySelectorAll('.cal-head .cal-week').forEach((el, i) => { if (labels[i]) el.textContent = labels[i]; });
+
   // Decide range by view
   if (state.calendarView === 'month') {
     await ensureCalendarTasks();
@@ -1575,7 +1632,9 @@ async function renderCalendar() {
 
     const first = new Date(y, m, 1);
     const start = new Date(first);
-    start.setDate(first.getDate() - first.getDay());
+    const ws = (settings.weekStart || 'mon') === 'sun' ? 0 : 1;
+    const shift = (first.getDay() - ws + 7) % 7;
+    start.setDate(first.getDate() - shift);
 
     const tasksByDate = new Map();
     for (const t of state.calendarTasks) {
@@ -1630,7 +1689,9 @@ async function renderCalendar() {
   const base = state.calendarCursor instanceof Date ? state.calendarCursor : new Date();
   const start = new Date(base);
   if (state.calendarView === 'week') {
-    start.setDate(base.getDate() - base.getDay());
+    const ws = (settings.weekStart || 'mon') === 'sun' ? 0 : 1;
+    const shift = (base.getDay() - ws + 7) % 7;
+    start.setDate(base.getDate() - shift);
   } else {
     // day
     start.setDate(base.getDate());
@@ -1768,8 +1829,8 @@ function initSummary() {
 function startOfWeek(d) {
   const x = new Date(d);
   const day = x.getDay(); // 0..6 (Sun..)
-  // TickTick обычно считает неделю с понедельника; делаем Monday
-  const diff = (day === 0 ? -6 : 1) - day;
+  const start = (settings.weekStart || 'mon') === 'sun' ? 0 : 1;
+  const diff = start === 1 ? ((day === 0 ? -6 : 1) - day) : (0 - day);
   x.setDate(x.getDate() + diff);
   x.setHours(0, 0, 0, 0);
   return x;
@@ -1868,6 +1929,130 @@ function setSettingsTab(label) {
     return;
   }
 
+  if (label === 'Дата и время') {
+    const ws = settings.weekStart || 'mon';
+    const tf = settings.timeFormat || '24';
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Дата и время</h2>
+      <div class="card">
+        <div class="row"><div>Начало недели</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn ${ws==='mon'?'primary':''}" id="wkMon">Пн</button>
+            <button class="btn ${ws==='sun'?'primary':''}" id="wkSun">Вс</button>
+          </div>
+        </div>
+        <div class="row"><div>Формат времени</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn ${tf==='24'?'primary':''}" id="tf24">24ч</button>
+            <button class="btn ${tf==='12'?'primary':''}" id="tf12">12ч</button>
+          </div>
+        </div>
+      </div>
+      <div class="hint-card">Параметры применяются к календарю и форматированию дат.</div>
+    `;
+    setTimeout(() => {
+      $("wkMon")?.addEventListener('click', () => { settings.weekStart='mon'; save(); setSettingsTab('Дата и время'); renderCalendar?.(); });
+      $("wkSun")?.addEventListener('click', () => { settings.weekStart='sun'; save(); setSettingsTab('Дата и время'); renderCalendar?.(); });
+      $("tf24")?.addEventListener('click', () => { settings.timeFormat='24'; save(); setSettingsTab('Дата и время'); });
+      $("tf12")?.addEventListener('click', () => { settings.timeFormat='12'; save(); setSettingsTab('Дата и время'); });
+    }, 0);
+    return;
+  }
+
+  if (label === 'Функциональные модули') {
+    const mods = settings.modules || { calendar:true, search:true, summary:true };
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Функциональные модули</h2>
+      <div class="card">
+        <div class="row"><div>Календарь</div><button class="toggle ${mods.calendar?'on':''}" id="tgCal"><span class="knob"></span></button></div>
+        <div class="row"><div>Поиск</div><button class="toggle ${mods.search?'on':''}" id="tgSearch"><span class="knob"></span></button></div>
+        <div class="row"><div>Сводка</div><button class="toggle ${mods.summary?'on':''}" id="tgSummary"><span class="knob"></span></button></div>
+      </div>
+      <div class="hint-card">Отключенные модули скрываются из меню слева.</div>
+    `;
+    const flip = (k) => {
+      settings.modules = { ...mods, [k]: !mods[k] };
+      save();
+      applyLayout();
+      setSettingsTab('Функциональные модули');
+    };
+    setTimeout(() => {
+      $("tgCal")?.addEventListener('click', () => flip('calendar'));
+      $("tgSearch")?.addEventListener('click', () => flip('search'));
+      $("tgSummary")?.addEventListener('click', () => flip('summary'));
+    }, 0);
+    return;
+  }
+
+  if (label === 'Уведомления') {
+    const onVal = !!settings.reminders;
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Уведомления</h2>
+      <div class="card">
+        <div class="row"><div>Напоминания</div><button class="toggle ${onVal?'on':''}" id="tgRem"><span class="knob"></span></button></div>
+        <div class="row"><div class="muted">Web‑уведомления</div><div class="muted">(в разработке)</div></div>
+      </div>
+      <div class="hint-card">Сейчас настройка сохраняется и влияет на будущие функции напоминаний.</div>
+    `;
+    setTimeout(() => {
+      $("tgRem")?.addEventListener('click', () => { settings.reminders = !settings.reminders; save(); setSettingsTab('Уведомления'); });
+    }, 0);
+    return;
+  }
+
+  if (label === 'Умный список') {
+    const dense = settings.denseUI !== false;
+    const hints = settings.showHints !== false;
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Умный список</h2>
+      <div class="card">
+        <div class="row"><div>Компактный список задач</div><button class="toggle ${dense?'on':''}" id="tgDense"><span class="knob"></span></button></div>
+        <div class="row"><div>Подсказки в сайдбаре</div><button class="toggle ${hints?'on':''}" id="tgHints"><span class="knob"></span></button></div>
+      </div>
+      <div class="hint-card">Компактный режим приближает вид к TickTick (строки + разделители).</div>
+    `;
+    setTimeout(() => {
+      $("tgDense")?.addEventListener('click', () => { settings.denseUI = !(settings.denseUI !== false); save(); document.body.dataset.dense = (settings.denseUI !== false) ? '1':'0'; setSettingsTab('Умный список'); });
+      $("tgHints")?.addEventListener('click', () => { settings.showHints = !(settings.showHints !== false); save(); document.body.dataset.hints = (settings.showHints !== false) ? '1':'0'; setSettingsTab('Умный список'); });
+    }, 0);
+    return;
+  }
+
+  if (label === 'Интеграции и импорт') {
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Интеграции и импорт</h2>
+      <div class="card">
+        <div class="row"><div>Экспорт данных</div><button class="btn" id="btnExport">Скачать JSON</button></div>
+        <div class="row"><div class="muted">Импорт</div><button class="btn" id="btnImport" disabled>Скоро</button></div>
+      </div>
+      <div class="hint-card">Экспорт включает списки, папки, секции и задачи (активные + выполненные).</div>
+    `;
+    setTimeout(() => {
+      $("btnExport")?.addEventListener('click', async () => {
+        try {
+          const [folders, lists, active, done] = await Promise.all([
+            apiGetFolders(),
+            apiGetLists(),
+            apiGetTasks({ filter: 'active', sort: settings.sort || 'due' }),
+            apiGetTasks({ filter: 'completed', sort: settings.sort || 'due' }),
+          ]);
+          const dump = { exportedAt: new Date().toISOString(), folders, lists, tasks: active, completed: done };
+          const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `clocktime-export-${Date.now()}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(a.href);
+        } catch (e) {
+          alert('Не удалось экспортировать');
+        }
+      });
+    }, 0);
+    return;
+  }
+
   if (label === 'Горячие клавиши') {
     box.innerHTML = `
       <h2 style="margin:0 0 12px;font-weight:950">Горячие клавиши</h2>
@@ -1891,6 +2076,18 @@ function setSettingsTab(label) {
         <div class="row"><div>Версия</div><div class="muted">v20-ui-auth</div></div>
         <div class="row"><div>Хранилище</div><div class="muted">PostgreSQL (Railway)</div></div>
       </div>
+    `;
+    return;
+  }
+
+  // Simple placeholders for sections that are not implemented yet
+  if (label !== 'Аккаунт') {
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">${label}</h2>
+      <div class="card">
+        <div class="row"><div class="muted">Раздел в разработке</div><div class="muted">—</div></div>
+      </div>
+      <div class="hint-card">Если хочешь — скажи, какой именно функционал нужен в этом разделе, и я сделаю его рабочим.</div>
     `;
     return;
   }

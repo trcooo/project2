@@ -1,6 +1,7 @@
 :root{
-  --bg:#0b1320;
-  --bg2:#0a1020;
+  /* darker neutral base (closer to TickTick) */
+  --bg:#1a1a1a;
+  --bg2:#141414;
   --panel:#1f1f1f;
   --panel2:#232323;
   --card:#232323;
@@ -46,10 +47,8 @@
 
 *{box-sizing:border-box}
 html,body{height:100%}
-body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:
-  radial-gradient(1200px 720px at 50% -10%, rgba(80,140,255,.18), transparent 55%),
-  radial-gradient(1200px 900px at 20% 120%, rgba(0,160,255,.12), transparent 55%),
-  linear-gradient(180deg,var(--bg) 0%, var(--bg2) 100%);
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  background:linear-gradient(180deg,var(--bg) 0%, var(--bg2) 100%);
   color:var(--text)}
 
 .ico{width:18px;height:18px;display:inline-block;vertical-align:middle}
@@ -71,7 +70,9 @@ button,input,select,textarea{font:inherit}
 
 /* Sidebar */
 .drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40}
-.drawer.sidebar{width:min(var(--sidebar-w),86vw);background:linear-gradient(180deg,rgba(18,26,40,.92) 0%, rgba(16,22,34,.92) 100%);border-right:1px solid rgba(255,255,255,.07);color:var(--text);z-index:41;position:fixed;top:0;left:0;height:100vh;padding:10px 10px 12px;backdrop-filter:blur(18px)}
+.drawer.sidebar{width:min(var(--sidebar-w),86vw);
+  background:linear-gradient(180deg,rgba(24,24,24,.96) 0%, rgba(16,16,16,.96) 100%);
+  border-right:1px solid rgba(255,255,255,.07);color:var(--text);z-index:41;position:fixed;top:0;left:0;height:100vh;padding:10px 10px 12px;backdrop-filter:blur(14px)}
 .sidebar-inner{height:100%;display:flex;flex-direction:column}
 .drawer-nav{display:flex;flex-direction:column;gap:4px;padding:4px}
 .drawer-sep{height:1px;background:var(--line);margin:8px 6px}
@@ -105,10 +106,11 @@ button,input,select,textarea{font:inherit}
 
 /* Main */
 .main{flex:1;min-width:0;display:flex}
-.container{flex:1;min-width:0;padding:14px 14px 200px;max-width:1400px;margin:0 auto}
+.container{flex:1;min-width:0;padding:14px 14px 200px;max-width:none;margin:0}
 
 /* Topbar */
-.topbar{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line);background:rgba(0,0,0,.12);backdrop-filter:blur(14px);position:sticky;top:0;z-index:20}
+.topbar{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line);
+  background:rgba(20,20,20,.78);backdrop-filter:blur(14px);position:sticky;top:0;z-index:20}
 .tb-left{display:flex;align-items:center;gap:10px;min-width:0}
 .tb-title{min-width:0}
 .title-main{font-weight:900;font-size:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -135,7 +137,7 @@ button,input,select,textarea{font:inherit}
 .search-ico{color:var(--muted);font-weight:900}
 
 /* Desktop add bar */
-.desk-addbar{position:relative;display:none;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid var(--line);margin-top:12px}
+.desk-addbar{position:relative;display:none;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);margin-top:12px}
 .desk-addbar:focus-within{border-color:rgba(47,123,255,.55);box-shadow:0 0 0 2px rgba(47,123,255,.18)}
 .dab-plus{opacity:.65;font-weight:900}
 .desk-addbar input{flex:1;border:0;outline:none;background:transparent;color:var(--text);font-size:14px}
@@ -162,20 +164,24 @@ button,input,select,textarea{font:inherit}
 
 @media (min-width: 900px){
   .tasks-layout{display:flex;align-items:flex-start;gap:18px}
-  .tasks-pane{width:520px;max-width:520px}
+  .tasks-pane{width:clamp(640px,58vw,980px);max-width:none}
   .pane-head{display:flex}
   .pane-sub{display:block}
 }
 
-/* Default (no split) list look: flat rows */
-#tasksLayout:not(.split) .tasks{gap:0}
-#tasksLayout:not(.split) .task{border-radius:0}
-#tasksLayout:not(.split) .task-card{background:transparent;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:12px 8px}
-#tasksLayout:not(.split) .task-card:hover{background:rgba(255,255,255,.03)}
-#tasksLayout:not(.split) .task:last-child .task-card{border-bottom:0}
-#tasksLayout:not(.split) .task-actions{opacity:0;pointer-events:none}
-#tasksLayout:not(.split) .task:hover .task-actions{opacity:1;pointer-events:auto}
-#tasksLayout:not(.split) .task.selected .task-card{background:rgba(47,123,255,.10)}
+/* Default (no split) list look: flat rows (TickTick-like) */
+body[data-dense="1"] #tasksLayout:not(.split) .tasks{gap:0}
+body[data-dense="1"] #tasksLayout:not(.split) .task{border-radius:0}
+body[data-dense="1"] #tasksLayout:not(.split) .task-card{background:transparent;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:12px 8px}
+body[data-dense="1"] #tasksLayout:not(.split) .task-card:hover{background:rgba(255,255,255,.03)}
+body[data-dense="1"] #tasksLayout:not(.split) .task:last-child .task-card{border-bottom:0}
+body[data-dense="1"] #tasksLayout:not(.split) .task-actions{opacity:0;pointer-events:none}
+body[data-dense="1"] #tasksLayout:not(.split) .task:hover .task-actions{opacity:1;pointer-events:auto}
+body[data-dense="1"] #tasksLayout:not(.split) .task.selected .task-card{background:rgba(47,123,255,.10)}
+
+/* Non-dense: card rows */
+body[data-dense="0"] #tasksLayout:not(.split) .tasks{gap:10px}
+body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
 
 /* Split mode list look: cards */
 #tasksLayout.split .tasks{gap:10px}
@@ -302,6 +308,8 @@ button,input,select,textarea{font:inherit}
 .rp-val{color:rgba(232,232,232,.60);font-weight:800}
 .toggle{width:46px;height:22px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.04);position:relative;display:inline-block}
 .toggle .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:999px;background:rgba(255,255,255,.55)}
+.toggle.on{background:rgba(47,123,255,.25);border-color:rgba(47,123,255,.35)}
+.toggle.on .knob{left:24px;background:rgba(255,255,255,.92)}
 
 /* Mobile composer/nav */
 .composer{position:fixed;left:50%;transform:translateX(-50%);bottom:86px;width:min(520px, calc(100% - 28px));background:rgba(0,0,0,.25);backdrop-filter:blur(16px);border:1px solid var(--line);border-radius:999px;box-shadow:var(--shadow);display:flex;align-items:center;gap:10px;padding:10px 12px;z-index:30}
@@ -383,6 +391,14 @@ button,input,select,textarea{font:inherit}
 .muted{color:rgba(232,232,232,.55);font-weight:800}
 .danger{color:#ff4d4d;font-weight:900}
 
+/* Settings modal on small screens: full screen + horizontal tabs */
+@media (max-width: 900px){
+  .modal{inset:0;border-radius:0}
+  .modal-body{grid-template-columns:1fr}
+  .modal-nav{border-right:0;border-bottom:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap;padding:10px;max-height:160px}
+  .mnav-item{padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.02)}
+}
+
 /* Responsive */
 .mobile-only{display:block}
 
@@ -397,8 +413,8 @@ button,input,select,textarea{font:inherit}
   .mobile-only{display:none}
   .bottom-nav{display:none}
 
-  /* Desktop composer (like TickTick bottom bar) */
-  .composer{display:flex;left:calc(var(--rail-w) + var(--sidebar-w) + 18px);transform:none;bottom:22px;width:calc(100% - var(--rail-w) - var(--sidebar-w) - 36px);max-width:980px;border-radius:18px;padding:10px 12px}
+  /* Desktop: hide bottom composer (use top add bar like TickTick) */
+  .composer{display:none}
 
   /* Desktop task tweaks */
   .swipe-actions{display:none}
@@ -414,6 +430,45 @@ button,input,select,textarea{font:inherit}
   body[data-view="summary"] .rightpanel{display:flex}
   body[data-view="summary"] .main{padding-right:320px}
   #rightPanel[hidden]{display:none}
+}
+
+/* Hide sidebar hints if disabled */
+body[data-hints="0"] .hint-card{display:none}
+
+/* Group headers like TickTick */
+.section-head{margin-top:18px;width:100%;border:0;background:transparent;color:rgba(232,232,232,.70);font-weight:900;font-size:14px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:10px}
+.section-head .sh-chev{display:flex;align-items:center;justify-content:center;width:18px;opacity:.85}
+.section-head .sh-title{flex:0}
+.section-head .sh-count{margin-left:2px;color:rgba(232,232,232,.45);font-weight:950}
+.section-head:hover{color:rgba(232,232,232,.92)}
+
+/* Due styling (right column) */
+.rm-due.due-over{color:#ff4d4d;font-weight:950}
+.rm-due.due-today{color:var(--blue2);font-weight:950}
+
+/* Dense UI: even in split mode use flat rows */
+body[data-dense="1"] #tasksLayout.split .tasks{gap:0}
+body[data-dense="1"] #tasksLayout.split .task{border-radius:0}
+body[data-dense="1"] #tasksLayout.split .task-card{background:transparent;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:12px 8px}
+body[data-dense="1"] #tasksLayout.split .task-card:hover{background:rgba(255,255,255,.03)}
+body[data-dense="1"] #tasksLayout.split .task:last-child .task-card{border-bottom:0}
+
+/* Right-side subtle watermark (desktop tasks view) */
+@media (min-width: 900px){
+  body[data-view="tasks"] .tasks-layout::after{
+    content:"";
+    position:fixed;
+    right:18px;
+    bottom:18px;
+    width:520px;
+    height:520px;
+    opacity:.06;
+    pointer-events:none;
+    background-repeat:no-repeat;
+    background-position:right bottom;
+    background-size:contain;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='520' height='520' viewBox='0 0 520 520'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='.9' stroke-width='2'%3E%3Crect x='130' y='130' width='260' height='260' rx='26'/%3E%3Cpath d='M190 230h140M190 270h110M190 310h80'/%3E%3Crect x='160' y='175' width='46' height='46' rx='10'/%3E%3Cpath d='M175 198l10 10 16-20'/%3E%3C/g%3E%3C/svg%3E");
+  }
 }
 
 /* Hide sidebar for calendar/search modules on desktop */
