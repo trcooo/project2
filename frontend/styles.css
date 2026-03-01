@@ -1,41 +1,91 @@
 :root{
-  /* darker neutral base (closer to TickTick) */
-  --bg:#1a1a1a;
-  --bg2:#141414;
-  --panel:#1f1f1f;
-  --panel2:#232323;
-  --card:#232323;
-  --card2:rgba(40,40,40,.72);
-  --text:#e8e8e8;
-  --muted:var(--muted);
-  --line:rgba(255,255,255,.07);
-  --line2:var(--hover2);
+  /* TickTick-like palette + scale */
+  --bg:#121212;
+  --bg2:#0f0f10;
+  --panel:#1b1c1f;
+  --panel2:#202226;
+  --card:#1f2125;
+  --text:#e9eaee;
+  --muted:rgba(233,234,238,.62);
+  --line:rgba(255,255,255,.08);
+  --line2:rgba(255,255,255,.12);
+
+  --hover:rgba(255,255,255,.06);
+  --hover2:rgba(255,255,255,.10);
+  --glass:rgba(255,255,255,.05);
+  --glass2:rgba(255,255,255,.035);
+
   --blue:#2f7bff;
   --blue2:#6aa3ff;
   --danger:#ff4d4d;
+
   --shadow:0 14px 40px rgba(0,0,0,.38);
+  --shadow-soft:0 10px 26px rgba(0,0,0,.28);
+
   --radius:14px;
   --radius2:18px;
-  --rail:#141414;
-  --rail2:#101010;
-  --rail-w:56px;
-  --sidebar-w:320px;
 
-  --hover: var(--hover);
-  --hover2: var(--hover2);
-  --glass: var(--glass);
-  --glass2: var(--glass2);
-  --topbar-bg: rgba(20,20,20,.78);
-  --sidebar-bg1: rgba(24,24,24,.96);
-  --sidebar-bg2: rgba(16,16,16,.96);
-  --menu-bg: rgba(30,30,30,.98);
-  --modal-bg: rgba(28,28,28,.98);
+  --rail:#141416;
+  --rail2:#0f0f11;
+  --rail-w:56px;
+
+  --sidebar-w:308px;
+
+  --topbar-bg: rgba(18,18,18,.78);
+  --sidebar-bg1: rgba(24,24,26,.96);
+  --sidebar-bg2: rgba(16,16,18,.96);
+  --menu-bg: rgba(26,26,28,.98);
+  --modal-bg: rgba(26,26,28,.98);
   --overlay-bg: rgba(0,0,0,.55);
+
+  /* layout */
+  --content-max: 1320px;
+  --tasks-col: clamp(560px, 42vw, 760px);
+
   --ease: cubic-bezier(.2,.7,.2,1);
   --t-fast: 120ms;
   --t-med: 180ms;
   --t-slow: 260ms;
 }
+
+:root[data-theme="light"]{
+  /* TickTick-like light theme (polished) */
+  --bg:#f6f7fb;
+  --bg2:#eef2f7;
+  --panel:#ffffff;
+  --panel2:#f7f8fb;
+  --card:#ffffff;
+  --text:#101828;
+  --muted:rgba(16,24,40,.56);
+  --line:rgba(16,24,40,.08);
+  --line2:rgba(16,24,40,.12);
+
+  --hover:rgba(16,24,40,.045);
+  --hover2:rgba(37,99,235,.10);
+  --glass:rgba(255,255,255,.86);
+  --glass2:rgba(16,24,40,.03);
+
+  --danger:#d21f2b;
+  --blue:#2563eb;
+  --blue2:#1d4ed8;
+
+  --shadow:0 20px 52px rgba(16,24,40,.12);
+  --shadow-soft:0 12px 28px rgba(16,24,40,.10);
+
+  --rail:#f1f5f9;
+  --rail2:#e8edf5;
+
+  --topbar-bg: rgba(255,255,255,.86);
+  --sidebar-bg1: rgba(255,255,255,.94);
+  --sidebar-bg2: rgba(246,248,252,.94);
+  --menu-bg: rgba(255,255,255,.98);
+  --modal-bg: rgba(255,255,255,.98);
+  --overlay-bg: rgba(16,24,40,.16);
+
+  --content-max: 1320px;
+  --tasks-col: clamp(560px, 40vw, 780px);
+}
+
 
 /*
   Ensure the HTML [hidden] attribute always hides elements.
@@ -43,35 +93,6 @@
   the user-agent default and make hidden modals appear and block the UI.
 */
 [hidden]{display:none !important;}
-:root[data-theme="light"]{
-  --bg:#eef1f6;
-  --bg2:#e9eef8;
-  --panel:#ffffff;
-  --panel2:#f6f7fb;
-  --card:#ffffff;
-  --card2:rgba(255,255,255,.75);
-  --text:#0f172a;
-  --muted:rgba(15,23,42,.55);
-  --line:rgba(15,23,42,.10);
-  --line2:rgba(15,23,42,.14);
-  --danger:#d21f2b;
-  --blue:#2563eb;
-  --blue2:#1d4ed8;
-  --shadow:0 18px 45px rgba(15,23,42,.12);
-  --rail:#f1f5f9;
-  --rail2:#e2e8f0;
-
-  --hover: rgba(15,23,42,.06);
-  --hover2: rgba(15,23,42,.10);
-  --glass: rgba(15,23,42,.04);
-  --glass2: rgba(15,23,42,.03);
-  --topbar-bg: rgba(255,255,255,.82);
-  --sidebar-bg1: rgba(255,255,255,.90);
-  --sidebar-bg2: rgba(246,247,251,.92);
-  --menu-bg: rgba(255,255,255,.98);
-  --modal-bg: rgba(255,255,255,.98);
-  --overlay-bg: rgba(15,23,42,.18);
-}
 
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -137,7 +158,7 @@ button,input,select,textarea{font:inherit}
 
 /* Main */
 .main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:100vh}
-.container{flex:1;min-width:0;width:100%;padding:14px 14px 160px;max-width:1320px;margin:0 auto;overflow:auto;scrollbar-gutter:stable;display:flex;flex-direction:column;min-height:0}
+.container{flex:1;min-width:0;width:100%;padding:14px 14px 160px;max-width:var(--content-max);margin:0 auto;overflow:auto;scrollbar-gutter:stable;display:flex;flex-direction:column;min-height:0}
 
 /* Topbar */
 .topbar{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line);
@@ -164,7 +185,7 @@ button,input,select,textarea{font:inherit}
 .view.view-active{display:block}
 
 /* Search */
-.search{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:999px;background:var(--glass);border:1px solid var(--line);margin-top:12px}
+.search{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:999px;background:var(--card);border:1px solid var(--line);margin-top:12px}
 .search.big{padding:14px 16px}
 .search input{border:0;outline:none;background:transparent;width:100%;font-size:16px;color:var(--text)}
 .search-ico{color:var(--muted);font-weight:900}
@@ -197,7 +218,7 @@ button,input,select,textarea{font:inherit}
 
 @media (min-width: 900px){
   .tasks-layout{display:flex;align-items:flex-start;gap:18px}
-  .tasks-pane{width:clamp(640px,58vw,980px);max-width:none}
+  .tasks-pane{width:var(--tasks-col);max-width:none}
   .pane-head{display:flex}
   .pane-sub{display:block}
 }
@@ -214,12 +235,12 @@ body[data-dense="1"] #tasksLayout:not(.split) .task.selected .task-card{backgrou
 
 /* Non-dense: card rows */
 body[data-dense="0"] #tasksLayout:not(.split) .tasks{gap:10px}
-body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:var(--glass);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
 
 /* Split mode list look: cards */
 #tasksLayout.split .tasks{gap:10px}
 #tasksLayout.split .task{border-radius:var(--radius)}
-#tasksLayout.split .task-card{background:var(--glass);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+#tasksLayout.split .task-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
 #tasksLayout.split .task.selected .task-card{border-color:rgba(47,123,255,.55);box-shadow:0 0 0 1px rgba(47,123,255,.25) inset}
 
 /* Editor panel */
@@ -269,6 +290,13 @@ body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:var(--glass)
 
 .tasks{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px}
 .task{position:relative;overflow:hidden;border-radius:var(--radius)}
+
+/* Task animations (no flicker) */
+@keyframes taskEnter{from{opacity:0;transform:translateY(6px) scale(.995)}to{opacity:1;transform:translateY(0) scale(1)}}
+.task{will-change:transform;contain:layout paint}
+.task.enter{animation:taskEnter 180ms var(--ease) both}
+.task.leaving{overflow:hidden;pointer-events:none;opacity:0;transform:translateY(-4px);transition:height 180ms var(--ease), margin 180ms var(--ease), opacity 180ms var(--ease), transform 180ms var(--ease)}
+
 .task.completed{opacity:.75}
 .task.completed .task-title{opacity:.6;text-decoration:line-through}
 
@@ -291,6 +319,8 @@ body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:var(--glass)
 .due{color:var(--blue2);font-weight:900;min-width:70px;text-align:right}
 .due .rm-list{color:var(--muted);font-weight:800}
 .due .rm-due{color:var(--blue2);font-weight:900}
+.due .rm-list{display:none}
+@media (min-width: 900px){.due .rm-list{display:inline}}
 
 .task-actions{display:flex;gap:8px}
 .small-btn{border:0;background:var(--hover);color:var(--text);border-radius:12px;padding:10px;cursor:pointer;font-weight:900;transition:background-color var(--t-med) var(--ease), color var(--t-med) var(--ease), border-color var(--t-med) var(--ease), transform var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease)}
@@ -300,7 +330,7 @@ body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:var(--glass)
 .empty{margin-top:14px;padding:18px;text-align:center;color:var(--muted);font-weight:800}
 
 /* Calendar */
-.calendar{margin-top:12px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:rgba(255,255,255,.02)}
+.calendar{margin-top:12px;border:1px solid var(--line);border-radius:var(--radius2);overflow:hidden;background:var(--glass2);display:flex;flex-direction:column;flex:1;min-height:0}
 .cal-head{display:grid;grid-template-columns:repeat(7,1fr);border-bottom:1px solid var(--line)}
 .cal-week{padding:8px 10px;color:var(--muted);font-weight:900;font-size:12px}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:minmax(110px,1fr);flex:1;min-height:0}
@@ -621,8 +651,8 @@ body[data-module="search"] .tb-right{display:none}
 }
 
 #tasksLayout{width:100%;margin:0 auto}
-#tasksLayout:not(.split){max-width:900px}
-#tasksLayout.split{max-width:1320px}
+#tasksLayout:not(.split){max-width:860px}
+#tasksLayout.split{max-width:var(--content-max)}
 #tasksLayout:not(.split) .tasks-pane{margin-left:auto;margin-right:auto}
 
 #viewCalendar{display:flex;flex-direction:column;min-height:0;flex:1}
@@ -633,3 +663,47 @@ body[data-module="search"] .tb-right{display:none}
 #viewTasks.view-active{display:block}
 #viewSearch.view-active{display:block}
 #viewSummary.view-active{display:block}
+
+
+/* 2K/4K tuning */
+@media (min-width: 1600px){
+  :root{
+    --content-max: 1480px;
+    --tasks-col: clamp(640px, 34vw, 840px);
+  }
+}
+@media (min-width: 2200px){
+  :root{
+    --content-max: 1680px;
+    --tasks-col: clamp(720px, 30vw, 920px);
+    --sidebar-w: 320px;
+  }
+  body{font-size:15px}
+}
+@media (min-width: 3000px){
+  :root{
+    --content-max: 1880px;
+    --tasks-col: clamp(760px, 28vw, 980px);
+    --sidebar-w: 332px;
+  }
+  body{font-size:16px}
+}
+
+/* Better calendar fill: ensure the active calendar view occupies full height */
+#viewCalendar.view-active .calendar{flex:1;min-height:0}
+#viewCalendar.view-active #calGrid{flex:1;min-height:0}
+
+:root[data-theme="light"] .task-card{box-shadow:0 8px 18px rgba(15,23,42,.06), 0 1px 0 rgba(15,23,42,.05) inset}
+
+
+:root[data-theme="light"] .sidebar{box-shadow:0 1px 0 rgba(16,24,40,.06) inset}
+:root[data-theme="light"] .drawer-item.active{box-shadow:0 1px 0 rgba(16,24,40,.04) inset}
+:root[data-theme="light"] .task-card{
+  background:rgba(255,255,255,.92);
+  border-color:rgba(16,24,40,.10);
+  box-shadow:0 10px 22px rgba(16,24,40,.08), 0 1px 0 rgba(16,24,40,.06) inset;
+}
+:root[data-theme="light"] .topbar{
+  border-bottom:1px solid rgba(16,24,40,.08);
+}
+

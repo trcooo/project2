@@ -13,7 +13,7 @@ const settings = (() => {
     theme: "dark",
     weekStart: "mon",           // mon|sun
     timeFormat: "24",           // 24|12
-    denseUI: true,               // closer to TickTick list rows
+    denseUI: false,               // closer to TickTick list rows
     showHints: true,
     modules: { calendar: true, search: true, summary: true },
   };
@@ -217,7 +217,8 @@ function updateAccountUI() {
 function updateThemeIcon() {
   const use = $("themeIcon")?.querySelector?.("use");
   if (!use) return;
-  use.setAttribute("href", settings.theme === "light" ? "#i-sun" : "#i-moon");
+  const isLight = document.documentElement.getAttribute("data-theme") === "light";
+  use.setAttribute("href", isLight ? "#i-sun" : "#i-moon");
 }
 updateThemeIcon();
 
@@ -348,6 +349,7 @@ const state = {
   doneCollapsed: true,
   openSwipeId: null,
   selectedTaskId: null,
+  justCreatedId: null,
   draggingTask: null,
   draggingSectionId: null,
   draggingListId: null,
@@ -995,12 +997,25 @@ document.addEventListener("click", (e) => {
   }
 });
 
-function attachSwipe(card, t) {
+function attachSwipe(card) {
   if (isDesktop()) return;
+
+  const getId = () => card?.closest?.('.task')?.dataset?.id || "";
 
   let sx = 0, sy = 0, dx = 0, dy = 0, drag = false, pid = null;
   const OPEN = 110, TH = 60;
-  const down = (e) => { pid = e.pointerId; sx = e.clientX; sy = e.clientY; dx = dy = 0; drag = true; card.style.transition = "none"; card.setPointerCapture(pid); closeOpenSwipe(t.id); };
+
+  const down = (e) => {
+    const id = getId();
+    pid = e.pointerId;
+    sx = e.clientX; sy = e.clientY;
+    dx = dy = 0;
+    drag = true;
+    card.style.transition = "none";
+    try { card.setPointerCapture(pid); } catch {}
+    closeOpenSwipe(id);
+  };
+
   const move = (e) => {
     if (!drag) return;
     dx = e.clientX - sx;
@@ -1009,9 +1024,11 @@ function attachSwipe(card, t) {
     const x = Math.max(-OPEN, Math.min(OPEN, dx));
     card.style.transform = `translateX(${x}px)`;
   };
+
   const reset = () => { card.style.transition = "transform 160ms ease"; card.style.transform = "translateX(0)"; };
-  const openL = () => { card.style.transition = "transform 160ms ease"; card.style.transform = `translateX(${OPEN}px)`; state.openSwipeId = t.id; };
-  const openR = () => { card.style.transition = "transform 160ms ease"; card.style.transform = `translateX(${-OPEN}px)`; state.openSwipeId = t.id; };
+  const openL = () => { card.style.transition = "transform 160ms ease"; card.style.transform = `translateX(${OPEN}px)`; state.openSwipeId = getId(); };
+  const openR = () => { card.style.transition = "transform 160ms ease"; card.style.transform = `translateX(${-OPEN}px)`; state.openSwipeId = getId(); };
+
   const up = (e, c = false) => {
     if (!drag) return;
     drag = false;
@@ -1031,14 +1048,25 @@ function attachSwipe(card, t) {
 
 // Drag ordering (manual)
 function enableDrag(li, card, id) {
-  if (!isDesktop()) return;
+  // Bind drag listeners once; toggle draggable per-view.
+  if (!isDesktop()) { card.draggable = false; return; }
   card.draggable = true;
+  if (card.dataset.dragBound === "1") return;
+  card.dataset.dragBound = "1";
+
   on(card, "dragstart", (e) => {
+    if (!card.draggable) return;
     li.classList.add("dragging");
     const wrap = li.closest('[data-section-wrap]');
     const sec = wrap ? (wrap.dataset.section || '') : '';
     state.draggingTask = { id, fromSection: sec };
     e.dataTransfer.setData("text/plain", id);
+    // Prevent big default drag preview "jump" (keeps UI calm)
+    try {
+      const img = new Image();
+      img.src = "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=";
+      e.dataTransfer.setDragImage(img, 0, 0);
+    } catch (_) {}
     e.dataTransfer.effectAllowed = "move";
   });
   on(card, "dragend", () => { li.classList.remove("dragging"); state.draggingTask = null; });
@@ -1086,7 +1114,14 @@ function setupSectionDrop() {
     const ids = [...groups.querySelectorAll('section[data-section-wrap]')].map((sec) => sec.dataset.section).filter((id) => id);
     if (ids.length) {
       try { await apiReorderSections({ orderedIds: ids }); } catch (_) {}
-      await loadTasks();
+      // Update local state order to match DOM (no reload / no flicker)
+      const byId = new Map((state.sections || []).map((s) => [s.id, s]));
+      state.sections = ids.map((id, i) => {
+        const s = byId.get(id);
+        if (!s) return null;
+        return { ...s, sortOrder: i };
+      }).filter(Boolean);
+      state.sectionsCache[state.activeId] = state.sections || [];
     }
     state.draggingSectionId = null;
   });
@@ -1126,27 +1161,249 @@ function setupDrop() {
         try { await persistOrder(from); } catch (_) {}
       }
       try { await persistOrder(sid); } catch (_) {}
-      await loadTasks();
+      syncTasksStateFromDom();
+      // Avoid reload (no flicker)
+      renderTaskEditor();
     });
   });
 }
 
-// Task row
-function taskRow(t) {
-  const li = document.createElement("li");
-  const isTrashMode = (state.activeKind === "smart" && state.activeId === "trash") || !!t.trashed;
-  const isCompletedMode = (state.activeKind === "smart" && state.activeId === "completed");
+// Task row + animations (cached DOM, FLIP to avoid flicker)
+const _taskDom = new Map();
 
-  li.className = "task" + ((!isTrashMode && t.completed) ? " completed" : "") + (state.selectedTaskId === t.id ? " selected" : "");
-  if (isTrashMode) li.classList.add("trashed");
-  li.dataset.id = t.id;
+function _prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function _captureTaskRects() {
+  const m = new Map();
+  document.querySelectorAll('.task').forEach((el) => {
+    const id = el.dataset.id;
+    if (!id) return;
+    // Skip the actively dragged item to avoid fighting the browser drag preview
+    if (el.classList.contains('dragging')) return;
+    m.set(id, el.getBoundingClientRect());
+  });
+  return m;
+}
+
+function _playFlip(before) {
+  if (!before || _prefersReducedMotion()) return;
+
+  const after = new Map();
+  document.querySelectorAll('.task').forEach((el) => {
+    const id = el.dataset.id;
+    if (!id) return;
+    if (el.classList.contains('dragging')) return;
+    after.set(id, el.getBoundingClientRect());
+  });
+
+  // moved elements
+  for (const [id, first] of before.entries()) {
+    const last = after.get(id);
+    if (!last) continue;
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    const el = document.querySelector(`.task[data-id="${CSS.escape(id)}"]`);
+    if (!el) continue;
+    el.animate(
+      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0,0)' }],
+      { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }
+    );
+  }
+
+  // entering elements
+  for (const [id] of after.entries()) {
+    if (before.has(id)) continue;
+    const el = document.querySelector(`.task[data-id="${CSS.escape(id)}"]`);
+    if (!el) continue;
+    el.classList.add('enter');
+    clearTimeout(el._enterT);
+    el._enterT = setTimeout(() => el.classList.remove('enter'), 220);
+  }
+}
+
+async function _animateTaskExit(li) {
+  if (!li || _prefersReducedMotion()) return;
+  if (li.classList.contains('leaving')) return;
+
+  const h = li.getBoundingClientRect().height || 56;
+  li.style.height = h + 'px';
+  li.style.marginTop = getComputedStyle(li).marginTop;
+  li.style.marginBottom = getComputedStyle(li).marginBottom;
+
+  // force layout
+  li.offsetHeight;
+
+  li.classList.add('leaving');
+  li.style.height = '0px';
+  li.style.marginTop = '0px';
+  li.style.marginBottom = '0px';
+
+  await new Promise((r) => setTimeout(r, 190));
+}
+
+function _isTrashMode(t) {
+  return (state.activeKind === 'smart' && state.activeId === 'trash') || !!t.trashed;
+}
+
+
+function _currentMode() {
+  return (state.activeKind === "smart" && state.activeId === "completed") ? "completed"
+    : (state.activeKind === "smart" && state.activeId === "trash") ? "trash"
+    : "normal";
+}
+
+function _currentSearchQuery() {
+  return (($("searchInput")?.value || "").trim()).toLowerCase();
+}
+
+function _taskMatchesText(t, q) {
+  if (!q) return true;
+  const hay = ((t.title || "") + " " + (t.notes || "")).toLowerCase();
+  return hay.includes(q);
+}
+
+function _taskMatchesContext(t) {
+  const q = _currentSearchQuery();
+  if (!_taskMatchesText(t, q)) return false;
+
+  if (state.activeKind === "tag") {
+    return (t.tags || []).includes(state.activeId);
+  }
+
+  if (state.activeKind === "list") {
+    return t.listId === state.activeId;
+  }
+
+  if (state.activeKind === "smart") {
+    const today = iso(new Date());
+    const nextTo = iso(addDays(new Date(), 6));
+    if (state.activeId === "all") return true;
+    if (state.activeId === "today") return t.dueDate === today;
+    if (state.activeId === "day" && state.smartDue) return t.dueDate === state.smartDue;
+    if (state.activeId === "next7") return !!t.dueDate && t.dueDate >= today && t.dueDate <= nextTo;
+    if (state.activeId === "inbox") {
+      const inboxId = state.system.inboxId;
+      return inboxId ? (t.listId === inboxId) : true;
+    }
+  }
+
+  return true;
+}
+
+function _insertAt(arr, idx, item) {
+  if (idx === null || idx === undefined) idx = -1;
+  if (idx < 0 || idx > arr.length) arr.push(item);
+  else arr.splice(idx, 0, item);
+}
+
+function _removeTaskLocal(id) {
+  if (!id) return;
+  state.tasks = (state.tasks || []).filter((x) => x.id !== id);
+  state.done = (state.done || []).filter((x) => x.id !== id);
+  if (state.selectedTaskId === id) {
+    state.selectedTaskId = null;
+    setTasksSplitUI(false);
+    $("taskEditor") && ($("taskEditor").hidden = true);
+  }
+  _taskDom.delete(id);
+}
+
+function _upsertTaskLocal(updated, { created = false } = {}) {
+  if (!updated || !updated.id) return;
+  const id = updated.id;
+  const mode = _currentMode();
+  const match = _taskMatchesContext(updated);
+
+  // remember previous positions
+  const prevIdxTasks = (state.tasks || []).findIndex((x) => x.id === id);
+  const prevIdxDone = (state.done || []).findIndex((x) => x.id === id);
+
+  // remove first
+  state.tasks = (state.tasks || []).filter((x) => x.id !== id);
+  state.done = (state.done || []).filter((x) => x.id !== id);
+
+  if (mode === "trash") {
+    if (updated.trashed && match) {
+      _insertAt(state.tasks, created ? 0 : prevIdxTasks, updated);
+    }
+    return;
+  }
+
+  if (mode === "completed") {
+    if (updated.completed && !updated.trashed && match) {
+      _insertAt(state.tasks, created ? 0 : prevIdxTasks, updated);
+    }
+    return;
+  }
+
+  // normal
+  if (updated.trashed) {
+    // do not show trashed in normal lists
+    return;
+  }
+  if (updated.completed) {
+    if (match) _insertAt(state.done, created ? 0 : (prevIdxDone >= 0 ? prevIdxDone : 0), updated);
+  } else {
+    if (match) _insertAt(state.tasks, created ? 0 : prevIdxTasks, updated);
+  }
+}
+
+/**
+ * Sync state.tasks order (manual sort) from the current DOM to avoid full reload (no flicker).
+ * Keeps hidden (collapsed) tasks in their previous relative order.
+ */
+function syncTasksStateFromDom() {
+  if (!(settings.sort === "manual" && state.activeKind === "list")) return;
+
+  const byId = new Map((state.tasks || []).map((t) => [t.id, t]));
+  const seen = new Set();
+  const ordered = [];
+
+  document.querySelectorAll("#groups .tasks").forEach((ul) => {
+    const sid = ul.dataset.section || "";
+    ul.querySelectorAll(".task").forEach((li) => {
+      const id = li.dataset.id;
+      if (!id) return;
+      const t = byId.get(id);
+      if (!t) return;
+      seen.add(id);
+      // keep section id in sync if moved across sections
+      if ((t.sectionId || "") !== sid) t.sectionId = sid || "";
+      ordered.push(t);
+    });
+  });
+
+  // Append tasks not visible in DOM (collapsed sections/groups)
+  for (const t of (state.tasks || [])) {
+    if (!seen.has(t.id)) ordered.push(t);
+  }
+  state.tasks = ordered;
+}
+
+
+function taskRow(t) {
+  let li = _taskDom.get(t.id);
+  if (!li) {
+    li = _createTaskRow();
+    _taskDom.set(t.id, li);
+  }
+  _syncTaskRow(li, t);
+  return li;
+}
+
+function _createTaskRow() {
+  const li = document.createElement("li");
+  li.className = "task";
+  li.dataset.id = "";
 
   const actions = document.createElement("div");
   actions.className = "swipe-actions";
 
   const ok = document.createElement("button");
   ok.className = "action-btn complete";
-  ok.textContent = isTrashMode ? "↩" : (t.completed ? "↩" : "✓");
 
   const del = document.createElement("button");
   del.className = "action-btn delete";
@@ -1159,88 +1416,37 @@ function taskRow(t) {
   card.className = "task-card";
 
   const cb = document.createElement("div");
-  cb.className = "checkbox" + ((!isTrashMode && t.completed) ? " checked" : "");
-  if (isTrashMode) cb.classList.remove("checked"); // trash isn't a completion state
+  cb.className = "checkbox";
 
   const main = document.createElement("div");
   main.className = "task-main";
 
   const title = document.createElement("div");
   title.className = "task-title";
-  if (!isTrashMode && (t.priority || 0) > 0) {
-    const f = document.createElement("span");
-    f.className = "flag";
-    f.textContent = t.priority === 3 ? "!!!" : t.priority === 2 ? "!!" : "!";
-    title.appendChild(f);
-  }
+
+  const flag = document.createElement("span");
+  flag.className = "flag";
+  flag.hidden = true;
+
   const tt = document.createElement("span");
-  tt.textContent = t.title;
+  title.appendChild(flag);
   title.appendChild(tt);
 
   const meta = document.createElement("div");
   meta.className = "task-meta";
-  const list = state.lists.find((l) => l.id === t.listId);
-  if (list && !isTrashMode) {
-    const s = document.createElement("span");
-    s.textContent = `${list.emoji || "📌"} ${list.title}`;
-    meta.appendChild(s);
-  }
-  (t.tags || []).slice(0, 3).forEach((tag) => {
-    const c = document.createElement("span");
-    c.className = "chipTag";
-    c.textContent = "#" + tag;
-    meta.appendChild(c);
-  });
 
   main.appendChild(title);
-  if (meta.childNodes.length && !isDesktop()) main.appendChild(meta);
+  main.appendChild(meta);
 
   const due = document.createElement("div");
   due.className = "due";
-
-  // Right column labels (TickTick-like)
-  if (isDesktop()) {
-    if (!isTrashMode) {
-      const rn = document.createElement("span");
-      rn.className = "rm-list";
-      rn.textContent = list?.title || "Входящие";
-      due.appendChild(rn);
-    }
-
-    // date label
-    let label = "";
-    let cls = "";
-    if (isTrashMode) {
-      label = relLabelForIso(isoFromTs(t.trashedAt));
-      cls = "trash-date";
-    } else if (t.completed && t.completedAt) {
-      label = relLabelForIso(isoFromTs(t.completedAt));
-      cls = "done-date";
-    } else {
-      label = fmtDueShort(t.dueDate) || "";
-      cls = "rm-due";
-    }
-
-    if (label) {
-      const rd = document.createElement("span");
-      rd.className = "rm-due" + (cls ? ` ${cls}` : "");
-      rd.textContent = label;
-
-      // due styling for active tasks
-      if (!t.completed && !isTrashMode && t.dueDate) {
-        const today = iso(new Date());
-        if (t.dueDate < today) rd.classList.add('due-over');
-        if (t.dueDate === today) rd.classList.add('due-today');
-      }
-      due.appendChild(document.createTextNode(isTrashMode ? "" : " "));
-      due.appendChild(rd);
-    }
-  } else {
-    // mobile: show compact date only
-    if (isTrashMode) due.textContent = relLabelForIso(isoFromTs(t.trashedAt));
-    else if (t.completed && t.completedAt) due.textContent = relLabelForIso(isoFromTs(t.completedAt));
-    else due.textContent = fmtDueShort(t.dueDate);
-  }
+  const rmList = document.createElement("span");
+  rmList.className = "rm-list";
+  const rmDue = document.createElement("span");
+  rmDue.className = "rm-due";
+  due.appendChild(rmList);
+  due.appendChild(document.createTextNode(" "));
+  due.appendChild(rmDue);
 
   const right = document.createElement("div");
   right.className = "task-actions";
@@ -1264,46 +1470,173 @@ function taskRow(t) {
   li.appendChild(actions);
   li.appendChild(card);
 
-  attachSwipe(card, t);
+  // store parts for fast updates
+  li._p = { ok, del, card, cb, flag, tt, meta, rmList, rmDue, bE, bD };
+
+  // swipe (mobile)
+  attachSwipe(card);
+
+  const getT = () => li.__task;
 
   const doRestore = async () => {
-    await apiPatchTask(t.id, { trashed: false });
-    closeOpenSwipe();
-    await refreshCounts();
-    await loadTasks();
+    const t = getT();
+    if (!t) return;
+    await _animateTaskExit(li);
+    try {
+      const updated = await apiPatchTask(t.id, { trashed: false });
+      closeOpenSwipe();
+      _upsertTaskLocal(updated);
+      render();
+      await refreshCounts();
+    } catch (e) {
+      li.classList.remove('leaving');
+      li.style.height = li.style.marginTop = li.style.marginBottom = '';
+      throw e;
+    }
   };
 
+
   const doTrashOrDelete = async () => {
-    if (isTrashMode) {
+    const t = getT();
+    if (!t) return;
+    const trashMode = _isTrashMode(t);
+    if (trashMode) {
       if (!confirm("Удалить навсегда?")) return;
-      await apiDeleteTask(t.id, { hard: true });
-    } else {
-      if (!confirm("Переместить в корзину?")) return;
-      await apiDeleteTask(t.id);
+      await _animateTaskExit(li);
+      try {
+        await apiDeleteTask(t.id, { hard: true });
+        closeOpenSwipe();
+        _removeTaskLocal(t.id);
+        render();
+        await refreshCounts();
+      } catch (e) {
+        li.classList.remove('leaving');
+        li.style.height = li.style.marginTop = li.style.marginBottom = '';
+        throw e;
+      }
+      return;
     }
-    closeOpenSwipe();
-    await refreshCounts();
-    await loadTasks();
+    if (!confirm("Переместить в корзину?")) return;
+    await _animateTaskExit(li);
+    try {
+      await apiDeleteTask(t.id);
+      closeOpenSwipe();
+      const updated = { ...t, trashed: true, trashedAt: Math.floor(Date.now() / 1000) };
+      _upsertTaskLocal(updated);
+      render();
+      await refreshCounts();
+    } catch (e) {
+      li.classList.remove('leaving');
+      li.style.height = li.style.marginTop = li.style.marginBottom = '';
+      throw e;
+    }
   };
 
   const doToggleComplete = async () => {
-    await apiPatchTask(t.id, { completed: !t.completed });
-    closeOpenSwipe();
-    await refreshCounts();
-    await loadTasks();
+    const t = getT();
+    if (!t) return;
+    try {
+      const updated = await apiPatchTask(t.id, { completed: !t.completed });
+      closeOpenSwipe();
+      _upsertTaskLocal(updated);
+      render();
+      await refreshCounts();
+    } catch (e) {
+      throw e;
+    }
   };
 
-  on(ok, "click", async (e) => { e.stopPropagation(); isTrashMode ? await doRestore() : await doToggleComplete(); });
+  on(ok, "click", async (e) => { e.stopPropagation(); const t = getT(); if (!t) return; _isTrashMode(t) ? await doRestore() : await doToggleComplete(); });
   on(del, "click", async (e) => { e.stopPropagation(); await doTrashOrDelete(); });
-  on(cb, "click", async (e) => { e.stopPropagation(); isTrashMode ? await doRestore() : await doToggleComplete(); });
+  on(cb, "click", async (e) => { e.stopPropagation(); const t = getT(); if (!t) return; _isTrashMode(t) ? await doRestore() : await doToggleComplete(); });
   on(bD, "click", async (e) => { e.stopPropagation(); await doTrashOrDelete(); });
-  on(bE, "click", (e) => { e.stopPropagation(); openTask(t); });
-  on(card, "click", () => openTask(t));
+  on(bE, "click", (e) => { e.stopPropagation(); const t = getT(); if (!t) return; openTask(t); });
+  on(card, "click", () => { const t = getT(); if (!t) return; openTask(t); });
 
-  if (settings.sort === "manual" && state.activeKind === "list" && !t.completed && !isTrashMode) enableDrag(li, card, t.id);
   return li;
 }
 
+function _syncTaskRow(li, t) {
+  li.__task = t;
+  li.dataset.id = t.id;
+
+  const p = li._p;
+  const trashMode = _isTrashMode(t);
+  const selected = state.selectedTaskId === t.id;
+
+  // preserve transient classes
+  const keepDragging = li.classList.contains('dragging');
+  const keepLeaving = li.classList.contains('leaving');
+  const keepEnter = li.classList.contains('enter');
+
+  li.className = "task" + ((!trashMode && t.completed) ? " completed" : "") + (selected ? " selected" : "");
+  if (trashMode) li.classList.add("trashed");
+  if (keepDragging) li.classList.add('dragging');
+  if (keepLeaving) li.classList.add('leaving');
+  if (keepEnter) li.classList.add('enter');
+
+  // ok button + checkbox
+  p.ok.textContent = trashMode ? "↩" : (t.completed ? "↩" : "✓");
+  p.cb.className = "checkbox" + ((!trashMode && t.completed) ? " checked" : "");
+
+  // title + flag
+  p.tt.textContent = t.title || "";
+  const pr = Number(t.priority || 0);
+  if (!trashMode && pr > 0) {
+    p.flag.hidden = false;
+    p.flag.textContent = pr === 3 ? "!!!" : pr === 2 ? "!!" : "!";
+  } else {
+    p.flag.hidden = true;
+    p.flag.textContent = "";
+  }
+
+  // meta (mobile mostly)
+  p.meta.innerHTML = "";
+  const list = state.lists.find((l) => l.id === t.listId);
+  if (list && !trashMode) {
+    const s = document.createElement("span");
+    s.textContent = `${list.emoji || "📌"} ${list.title}`;
+    p.meta.appendChild(s);
+  }
+  (t.tags || []).slice(0, 3).forEach((tag) => {
+    const c = document.createElement("span");
+    c.className = "chipTag";
+    c.textContent = "#" + tag;
+    p.meta.appendChild(c);
+  });
+
+  // right column labels
+  if (trashMode) {
+    p.rmList.textContent = "";
+    p.rmDue.textContent = relLabelForIso(isoFromTs(t.trashedAt)) || "";
+    p.rmDue.className = "rm-due trash-date";
+  } else if (t.completed && t.completedAt) {
+    p.rmList.textContent = (isDesktop() ? (list?.title || "Входящие") : "");
+    p.rmDue.textContent = relLabelForIso(isoFromTs(t.completedAt)) || "";
+    p.rmDue.className = "rm-due done-date";
+  } else {
+    p.rmList.textContent = (isDesktop() ? (list?.title || "Входящие") : "");
+    p.rmDue.textContent = fmtDueShort(t.dueDate) || "";
+    p.rmDue.className = "rm-due";
+    if (!t.completed && t.dueDate) {
+      const today = iso(new Date());
+      if (t.dueDate < today) p.rmDue.classList.add('due-over');
+      if (t.dueDate === today) p.rmDue.classList.add('due-today');
+    }
+  }
+
+  // draggable toggling
+  const canDrag = (settings.sort === "manual" && state.activeKind === "list" && !t.completed && !trashMode);
+  if (canDrag) enableDrag(li, p.card, t.id);
+  else p.card.draggable = false;
+
+  // mark enter for freshly created task
+  if (state.justCreatedId && state.justCreatedId === t.id) {
+    li.classList.add('enter');
+    clearTimeout(li._enterT);
+    li._enterT = setTimeout(() => li.classList.remove('enter'), 220);
+  }
+}
 
 function secKey(id){ return id ? ("sec:"+id) : "sec:"; }
 
@@ -1407,7 +1740,9 @@ function renderListWithSections(groupsEl) {
         const t = name.trim();
         if (!t) return;
         await apiPatchSection(sid, { title: t });
-        await loadTasks();
+        syncTasksStateFromDom();
+      // Avoid reload (no flicker)
+      renderTaskEditor();
       });
 
       head.querySelector('.sec-more')?.addEventListener('click', async (e) => {
@@ -1416,7 +1751,9 @@ function renderListWithSections(groupsEl) {
         if (act === '2') {
           if (!confirm('Удалить секцию? Задачи перейдут в несгруппированный.')) return;
           await apiDeleteSection(sid);
-          await loadTasks();
+          syncTasksStateFromDom();
+      // Avoid reload (no flicker)
+      renderTaskEditor();
           return;
         }
         if (act === '1') {
@@ -1426,7 +1763,9 @@ function renderListWithSections(groupsEl) {
           const t = name.trim();
           if (!t) return;
           await apiPatchSection(sid, { title: t });
-          await loadTasks();
+          syncTasksStateFromDom();
+      // Avoid reload (no flicker)
+      renderTaskEditor();
         }
       });
     }
@@ -1450,6 +1789,8 @@ function render() {
   const done = $("completedTasks");
   const empty = $("emptyState");
   const completedHead = $("completedHead");
+
+  const _beforeRects = _captureTaskRects();
 
   const mode = (state.activeKind === "smart" && state.activeId === "completed") ? "completed"
     : (state.activeKind === "smart" && state.activeId === "trash") ? "trash"
@@ -1481,6 +1822,7 @@ function render() {
 
     // No drag & drop in trash
     renderTaskEditor();
+    requestAnimationFrame(() => _playFlip(_beforeRects));
     return;
   }
 
@@ -1520,6 +1862,7 @@ function render() {
     });
 
     renderTaskEditor();
+    requestAnimationFrame(() => _playFlip(_beforeRects));
     return;
   }
 
@@ -1567,6 +1910,7 @@ function render() {
   setupSectionDrop();
 
   renderTaskEditor();
+  requestAnimationFrame(() => _playFlip(_beforeRects));
 }
 
 
@@ -1828,9 +2172,15 @@ async function addTaskFromRaw(raw, explicitListId = null, explicitDue = null, ex
   // If user clicked "＋" on a section header, we add into that section.
   const sectionId = (state.activeKind === "list") ? (state.composer.sectionId || null) : null;
 
-  await apiCreateTask({ title: p.title, listId, sectionId, dueDate: due || null, tags: p.tags, priority, notes: null });
+  const created = await apiCreateTask({ title: p.title, listId, sectionId, dueDate: due || null, tags: p.tags, priority, notes: null });
+  state.justCreatedId = created?.id || null;
+  clearTimeout(state._justCreatedT);
+  state._justCreatedT = setTimeout(() => { state.justCreatedId = null; }, 600);
+
+  // Update UI instantly (no reload / no flicker)
+  _upsertTaskLocal(created, { created: true });
+  render();
   await refreshCounts();
-  await loadTasks();
 }
 
 async function addTask() {
@@ -2628,8 +2978,12 @@ on($("sortEmptyTrash"), "click", async () => {
   if (!confirm("Очистить корзину? Это удалит задачи навсегда.")) return;
   await apiEmptyTrash();
   closeSheet("sortBackdrop", "sortSheet");
+
+  // Update UI instantly (no reload)
+  state.tasks = [];
+  _taskDom.clear();
+  render();
   await refreshCounts();
-  await loadTasks();
 });
 document.querySelectorAll('.sheet-option[data-sort]').forEach((b) => on(b, "click", () => { settings.sort = b.dataset.sort; save(); closeSheet("sortBackdrop", "sortSheet"); loadTasks(); }));
 
@@ -2857,7 +3211,9 @@ on($("teMore"), "click", async () => {
         await apiDeleteTask(t.id, { hard: !!t.trashed });
         closeTaskEditor();
         await refreshCounts();
-        await loadTasks();
+        syncTasksStateFromDom();
+      // Avoid reload (no flicker)
+      renderTaskEditor();
       }
     }
   ];
@@ -2881,29 +3237,42 @@ on($("btnTaskDelete"), "click", async () => {
   const t = getTaskById(id);
   const isTrash = !!t?.trashed;
   if (!confirm(isTrash ? "Удалить навсегда?" : "Переместить в корзину?")) return;
+
   await apiDeleteTask(id, { hard: isTrash });
   closeSheet("taskBackdrop", "taskSheet");
+
+  // Update UI instantly (no reload)
+  if (isTrash) _removeTaskLocal(id);
+  else {
+    const updated = { ...(t || { id }), trashed: true, trashedAt: Math.floor(Date.now() / 1000) };
+    _upsertTaskLocal(updated);
+  }
+  render();
   await refreshCounts();
-  await loadTasks();
 });
 on($("btnTaskToggle"), "click", async () => {
   const id = state.editing.taskId;
   if (!id) return;
   const mode = $("btnTaskToggle").dataset.mode || "toggle";
+  let updated = null;
+
   if (mode === "restore") {
-    await apiPatchTask(id, { trashed: false });
+    updated = await apiPatchTask(id, { trashed: false });
   } else {
     const isDone = $("btnTaskToggle").dataset.completed === "1";
-    await apiPatchTask(id, { completed: !isDone });
+    updated = await apiPatchTask(id, { completed: !isDone });
   }
+
   closeSheet("taskBackdrop", "taskSheet");
+  _upsertTaskLocal(updated);
+  render();
   await refreshCounts();
-  await loadTasks();
 });
 on($("taskForm"), "submit", async (e) => {
   e.preventDefault();
   const id = state.editing.taskId;
   if (!id) return;
+
   const title = $("taskTitle").value.trim();
   if (!title) return;
   const notes = $("taskNotes").value.trim() || null;
@@ -2913,10 +3282,13 @@ on($("taskForm"), "submit", async (e) => {
   const tags = parseTagsInput($("taskTags").value);
   const prioBtn = [...document.querySelectorAll("#taskPrio .prio-btn")].find((b) => b.classList.contains("active"));
   const priority = prioBtn ? Number(prioBtn.dataset.p) : 0;
-  await apiPatchTask(id, { title, listId, sectionId, dueDate, tags, priority, notes });
+
+  const updated = await apiPatchTask(id, { title, listId, sectionId, dueDate, tags, priority, notes });
+
   closeSheet("taskBackdrop", "taskSheet");
+  _upsertTaskLocal(updated);
+  render();
   await refreshCounts();
-  await loadTasks();
 });
 
 // composer actions
