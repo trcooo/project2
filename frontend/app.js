@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v23-ref-completed-trash-stats");
+console.log("ClockTime build v24-theme-anim-calendar-fill");
 
 const settings = (() => {
   const defaults = {
@@ -93,6 +93,14 @@ function openPopover(anchorEl, items, { title = null, width = 260 } = {}) {
 function applyTheme() {
   const sysDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   const resolved = settings.theme === "auto" ? (sysDark ? "dark" : "light") : (settings.theme || "dark");
+
+  // Smooth transition for theme switching
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduceMotion) {
+    document.documentElement.classList.add('theme-anim');
+    clearTimeout(applyTheme._t);
+    applyTheme._t = setTimeout(() => document.documentElement.classList.remove('theme-anim'), 260);
+  }
 
   // Default CSS is dark; light uses data-theme="light"
   if (resolved === "light") document.documentElement.setAttribute("data-theme", "light");
@@ -456,8 +464,12 @@ function applyLayout() {
   } else {
     // mobile: sidebar is overlay only in tasks module
     if (state.module !== "tasks") {
-      $("drawer").hidden = true;
-      $("drawerBackdrop").hidden = true;
+      const d = $("drawer");
+      const b = $("drawerBackdrop");
+      d && d.classList.remove("open");
+      b && b.classList.remove("open");
+      d && (d.hidden = true);
+      b && (b.hidden = true);
     }
   }
 
@@ -553,13 +565,27 @@ function setModule(module) {
 function openDrawer() {
   if (isDesktop()) return;
   if (state.module !== "tasks") return;
-  $("drawer").hidden = false;
-  $("drawerBackdrop").hidden = false;
+  const d = $("drawer");
+  const b = $("drawerBackdrop");
+  if (!d || !b) return;
+  d.hidden = false;
+  b.hidden = false;
+  requestAnimationFrame(() => {
+    d.classList.add("open");
+    b.classList.add("open");
+  });
 }
 function closeDrawer() {
   if (isDesktop()) return;
-  $("drawer").hidden = true;
-  $("drawerBackdrop").hidden = true;
+  const d = $("drawer");
+  const b = $("drawerBackdrop");
+  if (!d || !b) return;
+  d.classList.remove("open");
+  b.classList.remove("open");
+  setTimeout(() => {
+    d.hidden = true;
+    b.hidden = true;
+  }, 190);
 }
 
 function updatePageTitle() {
@@ -1864,6 +1890,7 @@ async function renderCalendar() {
   const grid = $("calGrid");
   if (!grid) return;
   grid.innerHTML = "";
+  grid.classList.remove("cal-weekview", "cal-dayview");
 
   const todayIso = iso(new Date());
 
@@ -1991,14 +2018,13 @@ async function renderCalendar() {
   }
 
   // day view
+  grid.classList.add("cal-dayview");
   $("calViewBtn").textContent = 'День ▾';
   $("pageTitle").textContent = 'Календарь';
   $("calTitle").textContent = fmtDueLong(from);
 
   const wrap = document.createElement('div');
-  wrap.style.display='flex';
-  wrap.style.flexDirection='column';
-  wrap.style.gap='10px';
+  wrap.className = 'cal-daylist';
 
   const tasks = state.calendarTasks.filter((t)=>t.dueDate===from);
   if (!tasks.length) {
