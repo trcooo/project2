@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v24-theme-anim-calendar-fill");
+console.log("ClockTime build v25-layout-fix-no-calendar-leak");
 
 const settings = (() => {
   const defaults = {

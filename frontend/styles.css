@@ -95,7 +95,7 @@
 [hidden]{display:none !important;}
 
 *{box-sizing:border-box}
-html,body{height:100%}
+html,body{height:100%;overflow-x:hidden}
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
   background:linear-gradient(180deg,var(--bg) 0%, var(--bg2) 100%);
   color:var(--text)}
@@ -161,8 +161,9 @@ button,input,select,textarea{font:inherit}
 .container{flex:1;min-width:0;width:100%;padding:14px 14px 160px;max-width:var(--content-max);margin:0 auto;overflow:auto;scrollbar-gutter:stable;display:flex;flex-direction:column;min-height:0}
 
 /* Topbar */
-.topbar{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line);
+.topbar{height:54px;display:flex;align-items:center;justify-content:center;padding:0;border-bottom:1px solid var(--line);
   background:var(--topbar-bg);backdrop-filter:blur(14px);position:sticky;top:0;z-index:20;transition:background-color var(--t-med) var(--ease), color var(--t-med) var(--ease), border-color var(--t-med) var(--ease), transform var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease)}
+.topbar-inner{max-width:var(--content-max);width:100%;padding:0 12px;display:flex;align-items:center;justify-content:space-between;min-width:0}
 .tb-left{display:flex;align-items:center;gap:10px;min-width:0}
 .tb-center{flex:1;display:flex;justify-content:center;min-width:0}
 .tb-right{display:flex;align-items:center;gap:10px}
@@ -655,7 +656,9 @@ body[data-module="search"] .tb-right{display:none}
 #tasksLayout.split{max-width:var(--content-max)}
 #tasksLayout:not(.split) .tasks-pane{margin-left:auto;margin-right:auto}
 
-#viewCalendar{display:flex;flex-direction:column;min-height:0;flex:1}
+/* Calendar view MUST stay hidden unless it is the active view.
+   (Otherwise the weekday header leaks into the Tasks view.) */
+#viewCalendar{display:none;flex-direction:column;min-height:0;flex:1}
 
 [data-theme="light"] body[data-view="tasks"] .tasks-layout::after{filter:invert(1);opacity:.045}
 
