@@ -231,8 +231,16 @@
 
         <div id="groups"></div>
 
-        <button class="section-head muted" id="completedHead">Выполнено <span id="completedCount">0</span> <span id="completedChevron">▾</span></button>
-        <ul class="tasks" id="completedTasks"></ul>
+        <section class="completed-wrap" id="completedWrap">
+          <button class="section-head muted" id="completedHead">
+            <span class="cw-title">Выполнено</span>
+            <span class="cw-count" id="completedCount">0</span>
+            <span class="cw-chev" id="completedChevron">▾</span>
+          </button>
+          <div class="completed-body" id="completedBody">
+            <ul class="tasks" id="completedTasks"></ul>
+          </div>
+        </section>
         <div class="empty" id="emptyState" hidden>Задач нет</div>
           </div>
 

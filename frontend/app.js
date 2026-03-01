@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v26-today-ui-inbox-due");
+console.log("ClockTime build v27-today-composer-done-anim");
 
 const settings = (() => {
   const defaults = {
@@ -357,6 +357,8 @@ const state = {
   folderCollapsed: new Set(_collapse.folders || []),
   sectionCollapsed: new Set(_collapse.sections || []),
   doneCollapsed: true,
+  // Today inline addbar open/close
+  todayAddOpen: false,
   openSwipeId: null,
   selectedTaskId: null,
   justCreatedId: null,
@@ -529,6 +531,8 @@ if ($("paneSub")) $("paneSub").hidden = !(isDesktop() && state.view === 'tasks' 
 
 // Sync addbar controls visibility (today/inbox)
 if (typeof syncComposerUi === "function") syncComposerUi();
+// Today inline addbar open/close
+if (typeof syncTodayAddbar === "function") syncTodayAddbar();
 }
 
 function applyModules() {
@@ -712,6 +716,90 @@ function syncComposerUi() {
   updateDueIndicators();
 }
 
+function isTodayView(){
+  return state.view === 'tasks' && state.activeKind === 'smart' && state.activeId === 'today';
+}
+
+function syncTodayAddbar(){
+  const dab = $("deskAddbar");
+  const input = $("deskAddInput");
+  if (!dab || !input) return;
+
+  if (!isTodayView()) {
+    // reset
+    dab.classList.remove('today-open','today-collapsed');
+    input.readOnly = false;
+    input.removeAttribute('aria-hidden');
+    return;
+  }
+
+  dab.classList.toggle('today-open', !!state.todayAddOpen);
+  dab.classList.toggle('today-collapsed', !state.todayAddOpen);
+  // Collapsed state behaves like a clickable placeholder row
+  input.readOnly = !state.todayAddOpen;
+  if (!state.todayAddOpen) input.blur?.();
+}
+
+function setTodayAddOpen(open, { focus = false } = {}){
+  if (!isTodayView()) return;
+  state.todayAddOpen = !!open;
+  syncTodayAddbar();
+  if (focus) {
+    requestAnimationFrame(() => {
+      const input = $("deskAddInput");
+      if (!input) return;
+      input.readOnly = false;
+      input.focus?.();
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+    });
+  }
+}
+
+function syncCompletedBlock({ animate = false } = {}){
+  const wrap = $("completedWrap");
+  const body = $("completedBody");
+  const ul = $("completedTasks");
+  if (!wrap || !body || !ul) return;
+
+  // Only visible in normal task mode
+  const blocked = (state.activeKind === 'smart' && (state.activeId === 'trash' || state.activeId === 'completed'));
+  const has = !blocked && state.view === 'tasks' && state.done.length > 0;
+  wrap.hidden = !has;
+
+  $("completedCount").textContent = String(state.done.length);
+  // Today uses rotation animation on a single glyph
+  if (isTodayView()) $("completedChevron").textContent = "▾";
+  else $("completedChevron").textContent = state.doneCollapsed ? "▸" : "▾";
+  wrap.classList.toggle('collapsed', !!state.doneCollapsed);
+  wrap.classList.toggle('open', !state.doneCollapsed);
+
+  if (!has) return;
+
+  // Smooth expand/collapse only for Today (TickTick-like)
+  if (!isTodayView()) {
+    body.style.maxHeight = '';
+    body.style.opacity = '';
+    body.style.transform = '';
+    return;
+  }
+
+  const target = state.doneCollapsed ? 0 : ul.scrollHeight;
+  if (!animate) {
+    body.style.maxHeight = `${target}px`;
+    return;
+  }
+
+  // Animate between current height and target
+  const current = ul.scrollHeight;
+  if (!state.doneCollapsed) {
+    body.style.maxHeight = '0px';
+    requestAnimationFrame(() => { body.style.maxHeight = `${current}px`; });
+  } else {
+    body.style.maxHeight = `${current}px`;
+    requestAnimationFrame(() => { body.style.maxHeight = '0px'; });
+  }
+}
+
 function openInboxDuePicker(anchorEl, nativeInputEl) {
   const t = new Date();
   const today = iso(t);
@@ -732,6 +820,9 @@ function openInboxDuePicker(anchorEl, nativeInputEl) {
 function setActive(kind, id) {
   state.activeKind = kind;
   state.activeId = id;
+
+  // Today uses a collapsible inline addbar
+  if (kind === 'smart' && id === 'today') state.todayAddOpen = false;
 
   document.querySelectorAll(".drawer-item").forEach((b) => {
     const ok = b.dataset.kind === kind && b.dataset.id === id;
@@ -1899,6 +1990,8 @@ function render() {
   const done = $("completedTasks");
   const empty = $("emptyState");
   const completedHead = $("completedHead");
+  const completedWrap = $("completedWrap");
+  const completedBody = $("completedBody");
 
   const _beforeRects = _captureTaskRects();
 
@@ -1921,8 +2014,7 @@ function render() {
 
   if (mode === "trash") {
     // Flat list, like TickTick Trash
-    if (completedHead) completedHead.hidden = true;
-    done.hidden = true;
+    if (completedWrap) completedWrap.hidden = true;
 
     const ul = document.createElement("ul");
     ul.className = "tasks";
@@ -1938,8 +2030,7 @@ function render() {
 
   if (mode === "completed") {
     // Group by completion day (Today/Yesterday/...)
-    if (completedHead) completedHead.hidden = true;
-    done.hidden = true;
+    if (completedWrap) completedWrap.hidden = true;
 
     const grouped = groupCompleted(state.tasks);
     grouped.forEach((g) => {
@@ -1977,8 +2068,8 @@ function render() {
   }
 
   // NORMAL mode (active + completed section)
-  if (completedHead) completedHead.hidden = false;
-  done.hidden = false;
+  if (completedWrap) completedWrap.hidden = false;
+  if (completedBody) completedBody.style.maxHeight = '';
 
   if (state.activeKind === 'smart' && state.activeId === 'today') {
     // TickTick-like Today: no group header, just tasks list
@@ -2019,9 +2110,17 @@ function render() {
     });
   }
 
-  $("completedCount").textContent = String(state.done.length);
-  $("completedChevron").textContent = state.doneCollapsed ? "▸" : "▾";
-  if (!state.doneCollapsed) state.done.forEach((t) => done.appendChild(taskRow(t)));
+  // Completed block
+  if (state.activeKind === 'smart' && state.activeId === 'today') {
+    // Keep DOM for smooth expand/collapse
+    state.done.forEach((t) => done.appendChild(taskRow(t)));
+    syncCompletedBlock({ animate: false });
+  } else {
+    $("completedCount").textContent = String(state.done.length);
+    $("completedChevron").textContent = state.doneCollapsed ? "▸" : "▾";
+    if (!state.doneCollapsed) state.done.forEach((t) => done.appendChild(taskRow(t)));
+    if (completedWrap) completedWrap.hidden = state.done.length === 0;
+  }
 
   setupDrop();
   setupSectionDrop();
@@ -2031,7 +2130,11 @@ function render() {
 }
 
 
-on($("completedHead"), "click", () => { state.doneCollapsed = !state.doneCollapsed; render(); });
+on($("completedHead"), "click", () => {
+  state.doneCollapsed = !state.doneCollapsed;
+  if (isTodayView()) syncCompletedBlock({ animate: true });
+  else render();
+});
 
 async function loadTasks() {
   if (state.view !== "tasks") return;
@@ -2317,6 +2420,7 @@ async function addTaskDesktop() {
   $("deskAddInput").value = "";
   state.composer.sectionId = null;
   updateAddPlaceholder();
+  if (isTodayView()) setTodayAddOpen(false);
 }
 
 // Calendar
@@ -3420,14 +3524,65 @@ on($("compAddBtn"), "click", addTask);
 on($("compInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addTask(); } });
 
 on($("deskAddBtn"), "click", addTaskDesktop);
-on($("deskAddInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addTaskDesktop(); } });
+on($("deskAddInput"), "keydown", async (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    await addTaskDesktop();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    const input = $("deskAddInput");
+    if (input) input.value = "";
+    if (isTodayView()) setTodayAddOpen(false);
+    else input?.blur?.();
+  }
+});
 on($("deskDueBtn"), "click", (e) => {
   if (isInboxView()) { e.preventDefault(); openInboxDuePicker($("deskDueBtn"), $("deskDueDate")); return; }
   $("deskDueDate")?.click?.();
 });
 on($("deskDueDate"), "change", () => setComposerDue($("deskDueDate").value || null));
 on($("deskListBtn"), "click", () => $("compListBtn")?.click?.());
-on($("paneAdd"), "click", () => $("deskAddInput")?.focus());
+on($("paneAdd"), "click", () => {
+  if (isTodayView()) setTodayAddOpen(true, { focus: true });
+  else $("deskAddInput")?.focus?.();
+});
+
+// Today: addbar behaves like a collapsible row (TickTick-like)
+on($("deskAddbar"), "mousedown", (e) => {
+  if (!isTodayView()) return;
+  if (state.todayAddOpen) return;
+  e.preventDefault();
+  setTodayAddOpen(true, { focus: true });
+});
+on($("deskAddInput"), "focus", () => {
+  if (isTodayView() && !state.todayAddOpen) setTodayAddOpen(true);
+});
+on($("deskAddInput"), "blur", () => {
+  if (!isTodayView()) return;
+  setTimeout(() => {
+    const input = $("deskAddInput");
+    const pop = $("popover");
+    if (!isTodayView()) return;
+    if (pop && !pop.hidden) return;
+    if (input && input.value.trim()) return;
+    setTodayAddOpen(false);
+  }, 140);
+});
+
+// close Today addbar on outside click (if empty)
+document.addEventListener('mousedown', (e) => {
+  if (!isTodayView()) return;
+  if (!state.todayAddOpen) return;
+  const dab = $("deskAddbar");
+  const pop = $("popover");
+  if (dab && dab.contains(e.target)) return;
+  if (pop && !pop.hidden && pop.contains(e.target)) return;
+  const input = $("deskAddInput");
+  if (input && input.value.trim()) return;
+  setTodayAddOpen(false);
+});
 on($("newSectionBtn"), "click", async () => {
   if (state.activeKind !== "list") {
     alert("Секции доступны только внутри списка");
