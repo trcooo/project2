@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v21-ui");
+console.log("ClockTime build v23-ref-completed-trash-stats");
 
 const settings = (() => {
   const defaults = {
@@ -296,8 +296,16 @@ const apiReorderSections = (p) => api("/api/sections/reorder", { method: "POST",
 const apiGetTasks = (params) => api("/api/tasks?" + new URLSearchParams(params).toString());
 const apiCreateTask = (p) => api("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
 const apiPatchTask = (id, p) => api("/api/tasks/" + encodeURIComponent(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
-const apiDeleteTask = (id) => api("/api/tasks/" + encodeURIComponent(id), { method: "DELETE" });
+const apiDeleteTask = (id, { hard = false } = {}) => {
+  const qs = hard ? ("?" + new URLSearchParams({ hard: "true" }).toString()) : "";
+  return api("/api/tasks/" + encodeURIComponent(id) + qs, { method: "DELETE" });
+};
 const apiReorder = (p) => api("/api/tasks/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+
+const apiGetCounts = () => api("/api/counts");
+const apiGetTags = (params={}) => api("/api/tags?" + new URLSearchParams(params).toString());
+const apiEmptyTrash = () => api("/api/trash/empty", { method: "POST" });
+const apiGetStats = (days=14) => api("/api/stats?" + new URLSearchParams({ days: String(days) }).toString());
 
 // If any async code forgets to handle auth errors, bring user back to welcome.
 window.addEventListener("unhandledrejection", (ev) => {
@@ -321,6 +329,7 @@ const state = {
   folders: [],
   lists: [],
   sections: [],
+  tags: [],
   // cache: listId -> sections[] (used for editor dropdowns)
   sectionsCache: {},
   tasks: [],
@@ -369,6 +378,34 @@ const fmtDueShort = (s) => {
   const [yy, mm, dd] = s.split("-");
   return `${dd}.${mm}`;
 };
+
+
+const WEEKDAYS_RU = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
+
+function isoFromTs(ts){
+  if (ts === null || ts === undefined) return null;
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return iso(new Date(n * 1000));
+}
+
+function relLabelForIso(isoDate){
+  if (!isoDate) return "";
+  const t = iso(new Date());
+  const y = iso(addDays(new Date(), -1));
+  if (isoDate === t) return "Сегодня";
+  if (isoDate === y) return "Вчера";
+  const [yy, mm, dd] = isoDate.split("-");
+  const m = MONTHS_RU_SHORT[Math.max(0, Math.min(11, Number(mm) - 1))] || mm;
+  return `${Number(dd)} ${m}`;
+}
+
+function headerTitleForIso(isoDate){
+  if (!isoDate) return "Без даты";
+  const d = new Date(isoDate + "T00:00:00");
+  const wd = WEEKDAYS_RU[d.getDay()] || "";
+  return `${wd}, ${relLabelForIso(isoDate)}`;
+}
 
 const bucket = (s) => {
   if (!s) return "Без даты";
@@ -438,8 +475,13 @@ function applyLayout() {
   // Right panel
   $("rightPanel").hidden = state.view !== "summary";
 
+  // Add is disabled for smart views like Completed/Trash
+  const allowAdd = !(state.activeKind === "smart" && (state.activeId === "completed" || state.activeId === "trash"));
+
   // Mobile composer only (desktop uses top add bar like TickTick)
-  $("composer").style.display = (!isDesktop() && state.view === "tasks") ? "flex" : "none";
+  $("composer").style.display = (!isDesktop() && state.view === "tasks" && allowAdd) ? "flex" : "none";
+  const dab = $("deskAddbar");
+  if (dab) dab.hidden = !(isDesktop() && state.view === "tasks" && allowAdd);
 
   // Active rail
   document.querySelectorAll(".rail-item[data-module]").forEach((b) => {
@@ -522,12 +564,18 @@ function closeDrawer() {
 
 function updatePageTitle() {
   if (state.view !== "tasks") return;
+  if (state.activeKind === "tag") {
+    base.tag = state.activeId;
+    done.tag = state.activeId;
+  }
 
   if (state.activeKind === "smart") {
     if (state.activeId === "all") $("pageTitle").textContent = "Все";
     else if (state.activeId === "today") $("pageTitle").textContent = "Сегодня";
     else if (state.activeId === "next7") $("pageTitle").textContent = "Следующие 7";
     else if (state.activeId === "inbox") $("pageTitle").textContent = "Входящие";
+    else if (state.activeId === "completed") $("pageTitle").textContent = "Выполнено";
+    else if (state.activeId === "trash") $("pageTitle").textContent = "Корзина";
     else if (state.activeId === "day" && state.smartDue) $("pageTitle").textContent = fmtDueLong(state.smartDue);
     else $("pageTitle").textContent = "Все";
     return;
@@ -579,6 +627,33 @@ function setActive(kind, id) {
 }
 
 // Sidebar lists
+
+
+function renderTags() {
+  const el = $("tagsContainer");
+  if (!el) return;
+  el.innerHTML = "";
+
+  const tags = Array.isArray(state.tags) ? state.tags : [];
+  if (!tags.length) {
+    const d = document.createElement('div');
+    d.className = 'hint-card';
+    d.textContent = 'Пока нет меток';
+    el.appendChild(d);
+    return;
+  }
+
+  for (const it of tags.slice(0, 30)) {
+    const b = document.createElement('button');
+    b.className = 'drawer-item';
+    b.dataset.kind = 'tag';
+    b.dataset.id = it.tag;
+    b.innerHTML = `<span class="di-emoji"><svg class="ico sm"><use href="#i-tag"></use></svg></span><span class="di-title">#${it.tag}</span><span class="di-count">${it.count}</span>`;
+    b.classList.toggle('active', state.activeKind === 'tag' && state.activeId === it.tag);
+    b.addEventListener('click', () => setActive('tag', it.tag));
+    el.appendChild(b);
+  }
+}
 function renderLists() {
   const el = $("listsContainer");
   if (!el) return;
@@ -1033,17 +1108,24 @@ function setupDrop() {
 // Task row
 function taskRow(t) {
   const li = document.createElement("li");
-  li.className = "task" + (t.completed ? " completed" : "") + (state.selectedTaskId === t.id ? " selected" : "");
+  const isTrashMode = (state.activeKind === "smart" && state.activeId === "trash") || !!t.trashed;
+  const isCompletedMode = (state.activeKind === "smart" && state.activeId === "completed");
+
+  li.className = "task" + ((!isTrashMode && t.completed) ? " completed" : "") + (state.selectedTaskId === t.id ? " selected" : "");
+  if (isTrashMode) li.classList.add("trashed");
   li.dataset.id = t.id;
 
   const actions = document.createElement("div");
   actions.className = "swipe-actions";
+
   const ok = document.createElement("button");
   ok.className = "action-btn complete";
-  ok.textContent = "✓";
+  ok.textContent = isTrashMode ? "↩" : (t.completed ? "↩" : "✓");
+
   const del = document.createElement("button");
   del.className = "action-btn delete";
   del.innerHTML = '<svg class="ico sm"><use href="#i-trash"></use></svg>';
+
   actions.appendChild(ok);
   actions.appendChild(del);
 
@@ -1051,14 +1133,15 @@ function taskRow(t) {
   card.className = "task-card";
 
   const cb = document.createElement("div");
-  cb.className = "checkbox" + (t.completed ? " checked" : "");
+  cb.className = "checkbox" + ((!isTrashMode && t.completed) ? " checked" : "");
+  if (isTrashMode) cb.classList.remove("checked"); // trash isn't a completion state
 
   const main = document.createElement("div");
   main.className = "task-main";
 
   const title = document.createElement("div");
   title.className = "task-title";
-  if ((t.priority || 0) > 0) {
+  if (!isTrashMode && (t.priority || 0) > 0) {
     const f = document.createElement("span");
     f.className = "flag";
     f.textContent = t.priority === 3 ? "!!!" : t.priority === 2 ? "!!" : "!";
@@ -1071,7 +1154,7 @@ function taskRow(t) {
   const meta = document.createElement("div");
   meta.className = "task-meta";
   const list = state.lists.find((l) => l.id === t.listId);
-  if (list) {
+  if (list && !isTrashMode) {
     const s = document.createElement("span");
     s.textContent = `${list.emoji || "📌"} ${list.title}`;
     meta.appendChild(s);
@@ -1088,36 +1171,62 @@ function taskRow(t) {
 
   const due = document.createElement("div");
   due.className = "due";
-  const dueTxt = fmtDueShort(t.dueDate);
-  if (isDesktop()) {
-    const rn = document.createElement("span");
-    rn.className = "rm-list";
-    rn.textContent = list?.title || "Входящие";
-    const rd = document.createElement("span");
-    rd.className = "rm-due";
-    rd.textContent = dueTxt || "";
 
-    // due styling like TickTick (overdue red, today blue)
-    const today = iso(new Date());
-    if (t.dueDate && t.dueDate < today) rd.classList.add('due-over');
-    if (t.dueDate && t.dueDate === today) rd.classList.add('due-today');
-    due.appendChild(rn);
-    if (dueTxt) {
-      due.appendChild(document.createTextNode(" "));
+  // Right column labels (TickTick-like)
+  if (isDesktop()) {
+    if (!isTrashMode) {
+      const rn = document.createElement("span");
+      rn.className = "rm-list";
+      rn.textContent = list?.title || "Входящие";
+      due.appendChild(rn);
+    }
+
+    // date label
+    let label = "";
+    let cls = "";
+    if (isTrashMode) {
+      label = relLabelForIso(isoFromTs(t.trashedAt));
+      cls = "trash-date";
+    } else if (t.completed && t.completedAt) {
+      label = relLabelForIso(isoFromTs(t.completedAt));
+      cls = "done-date";
+    } else {
+      label = fmtDueShort(t.dueDate) || "";
+      cls = "rm-due";
+    }
+
+    if (label) {
+      const rd = document.createElement("span");
+      rd.className = "rm-due" + (cls ? ` ${cls}` : "");
+      rd.textContent = label;
+
+      // due styling for active tasks
+      if (!t.completed && !isTrashMode && t.dueDate) {
+        const today = iso(new Date());
+        if (t.dueDate < today) rd.classList.add('due-over');
+        if (t.dueDate === today) rd.classList.add('due-today');
+      }
+      due.appendChild(document.createTextNode(isTrashMode ? "" : " "));
       due.appendChild(rd);
     }
   } else {
-    due.textContent = dueTxt;
+    // mobile: show compact date only
+    if (isTrashMode) due.textContent = relLabelForIso(isoFromTs(t.trashedAt));
+    else if (t.completed && t.completedAt) due.textContent = relLabelForIso(isoFromTs(t.completedAt));
+    else due.textContent = fmtDueShort(t.dueDate);
   }
 
   const right = document.createElement("div");
   right.className = "task-actions";
+
   const bE = document.createElement("button");
   bE.className = "small-btn";
   bE.innerHTML = '<svg class="ico sm"><use href="#i-edit"></use></svg>';
+
   const bD = document.createElement("button");
   bD.className = "small-btn";
   bD.innerHTML = '<svg class="ico sm"><use href="#i-trash"></use></svg>';
+
   right.appendChild(bE);
   right.appendChild(bD);
 
@@ -1131,16 +1240,44 @@ function taskRow(t) {
 
   attachSwipe(card, t);
 
-  on(ok, "click", async (e) => { e.stopPropagation(); await apiPatchTask(t.id, { completed: true }); closeOpenSwipe(); await refreshCounts(); await loadTasks(); });
-  on(del, "click", async (e) => { e.stopPropagation(); if (!confirm("Удалить?")) return; await apiDeleteTask(t.id); closeOpenSwipe(); await refreshCounts(); await loadTasks(); });
-  on(cb, "click", async (e) => { e.stopPropagation(); await apiPatchTask(t.id, { completed: !t.completed }); await refreshCounts(); await loadTasks(); });
-  on(bD, "click", async (e) => { e.stopPropagation(); if (!confirm("Удалить?")) return; await apiDeleteTask(t.id); await refreshCounts(); await loadTasks(); });
+  const doRestore = async () => {
+    await apiPatchTask(t.id, { trashed: false });
+    closeOpenSwipe();
+    await refreshCounts();
+    await loadTasks();
+  };
+
+  const doTrashOrDelete = async () => {
+    if (isTrashMode) {
+      if (!confirm("Удалить навсегда?")) return;
+      await apiDeleteTask(t.id, { hard: true });
+    } else {
+      if (!confirm("Переместить в корзину?")) return;
+      await apiDeleteTask(t.id);
+    }
+    closeOpenSwipe();
+    await refreshCounts();
+    await loadTasks();
+  };
+
+  const doToggleComplete = async () => {
+    await apiPatchTask(t.id, { completed: !t.completed });
+    closeOpenSwipe();
+    await refreshCounts();
+    await loadTasks();
+  };
+
+  on(ok, "click", async (e) => { e.stopPropagation(); isTrashMode ? await doRestore() : await doToggleComplete(); });
+  on(del, "click", async (e) => { e.stopPropagation(); await doTrashOrDelete(); });
+  on(cb, "click", async (e) => { e.stopPropagation(); isTrashMode ? await doRestore() : await doToggleComplete(); });
+  on(bD, "click", async (e) => { e.stopPropagation(); await doTrashOrDelete(); });
   on(bE, "click", (e) => { e.stopPropagation(); openTask(t); });
   on(card, "click", () => openTask(t));
 
-  if (settings.sort === "manual" && state.activeKind === "list" && !t.completed) enableDrag(li, card, t.id);
+  if (settings.sort === "manual" && state.activeKind === "list" && !t.completed && !isTrashMode) enableDrag(li, card, t.id);
   return li;
 }
+
 
 function secKey(id){ return id ? ("sec:"+id) : "sec:"; }
 
@@ -1150,6 +1287,26 @@ function groupTasks(ts) {
   ts.forEach((t) => { const k = bucket(t.dueDate); if (!m.has(k)) m.set(k, []); m.get(k).push(t); });
   const order = ["Просрочено", "Сегодня", "Завтра", "Позже", "Без даты"];
   return order.filter((k) => m.has(k)).map((k) => ({ key: k, title: k, items: m.get(k) }));
+}
+
+function groupCompleted(ts) {
+  // Group completed tasks by completion day (UTC timestamp stored, shown in local date)
+  const m = new Map(); // isoDate -> items
+  for (const t of (ts || [])) {
+    const d = isoFromTs(t.completedAt);
+    const k = d || "";
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(t);
+  }
+  const keys = [...m.keys()].filter(Boolean).sort().reverse();
+  const out = [];
+  for (const k of keys) {
+    out.push({ key: k, title: headerTitleForIso(k), items: m.get(k) });
+  }
+  if (m.has("")) {
+    out.push({ key: "", title: "Без даты", items: m.get("") });
+  }
+  return out;
 }
 
 function renderListWithSections(groupsEl) {
@@ -1266,17 +1423,84 @@ function render() {
   const groups = $("groups");
   const done = $("completedTasks");
   const empty = $("emptyState");
+  const completedHead = $("completedHead");
+
+  const mode = (state.activeKind === "smart" && state.activeId === "completed") ? "completed"
+    : (state.activeKind === "smart" && state.activeId === "trash") ? "trash"
+    : "normal";
 
   groups.innerHTML = "";
   done.innerHTML = "";
 
-  empty.hidden = !(state.tasks.length === 0 && state.done.length === 0);
-
-  // pane header (TickTick-like)
+  // Pane header (TickTick-like)
   if ($("paneTitle")) {
     $("paneTitle").textContent = $("pageTitle")?.textContent || "";
     $("paneCount").textContent = String(state.tasks.length);
   }
+
+  // Empty state
+  const hasAny = (state.tasks.length + state.done.length) > 0;
+  empty.hidden = hasAny;
+
+  if (mode === "trash") {
+    // Flat list, like TickTick Trash
+    if (completedHead) completedHead.hidden = true;
+    done.hidden = true;
+
+    const ul = document.createElement("ul");
+    ul.className = "tasks";
+    ul.dataset.section = "";
+    state.tasks.forEach((t) => ul.appendChild(taskRow(t)));
+    groups.appendChild(ul);
+
+    // No drag & drop in trash
+    renderTaskEditor();
+    return;
+  }
+
+  if (mode === "completed") {
+    // Group by completion day (Today/Yesterday/...)
+    if (completedHead) completedHead.hidden = true;
+    done.hidden = true;
+
+    const grouped = groupCompleted(state.tasks);
+    grouped.forEach((g) => {
+      const sec = document.createElement('section');
+      const head = document.createElement('button');
+      head.className = 'section-head';
+      const key = "done:" + g.key;
+      const chev = state.collapsed.has(key)
+        ? '<svg class="ico sm"><use href="#i-chevron-right"></use></svg>'
+        : '<svg class="ico sm"><use href="#i-chevron-down"></use></svg>';
+      head.innerHTML = `
+        <span class="sh-chev">${chev}</span>
+        <span class="sh-title">${g.title}</span>
+        <span class="sh-count">${g.items.length}</span>
+      `;
+      head.addEventListener('click', () => {
+        state.collapsed.has(key) ? state.collapsed.delete(key) : state.collapsed.add(key);
+        saveCollapse();
+        render();
+      });
+
+      const ul = document.createElement('ul');
+      ul.className = 'tasks';
+      ul.dataset.section = '';
+      if (!state.collapsed.has(key)) g.items.forEach((t) => ul.appendChild(taskRow(t)));
+
+      sec.appendChild(head);
+      sec.appendChild(ul);
+      groups.appendChild(sec);
+    });
+
+    renderTaskEditor();
+    return;
+  }
+
+  // NORMAL mode (active + completed section)
+  if (completedHead) completedHead.hidden = false;
+  done.hidden = false;
+
   if (state.activeKind === 'list') {
     renderListWithSections(groups);
   } else {
@@ -1316,9 +1540,9 @@ function render() {
   setupDrop();
   setupSectionDrop();
 
-  // keep desktop editor in sync
   renderTaskEditor();
 }
+
 
 on($("completedHead"), "click", () => { state.doneCollapsed = !state.doneCollapsed; render(); });
 
@@ -1334,6 +1558,30 @@ async function loadTasks() {
 
   const today = iso(new Date());
   const nextTo = iso(addDays(new Date(), 6));
+
+  // Special smart views
+  if (state.activeKind === 'smart' && state.activeId === 'completed') {
+    const params = { filter: 'completed', sort: 'completed' };
+    if (q) params.q = q;
+    state.tasks = await apiGetTasks(params);
+    state.done = [];
+    state.sections = [];
+    render();
+    return;
+  }
+  if (state.activeKind === 'smart' && state.activeId === 'trash') {
+    const params = { filter: 'trash', sort: 'trashed' };
+    if (q) params.q = q;
+    state.tasks = await apiGetTasks(params);
+    state.done = [];
+    state.sections = [];
+    render();
+    return;
+  }
+  if (state.activeKind === "tag") {
+    base.tag = state.activeId;
+    done.tag = state.activeId;
+  }
 
   if (state.activeKind === "smart") {
     if (state.activeId === "today") { base.due = today; done.due = today; }
@@ -1366,39 +1614,39 @@ async function loadTasks() {
 }
 
 async function refreshCounts() {
-  const today = iso(new Date());
-  const nextTo = iso(addDays(new Date(), 6));
+  const data = await apiGetCounts();
+  const byList = data.byList || {};
 
-  const all = await apiGetTasks({ filter: "active", sort: "created" });
-
-  const byList = {};
   const byFolder = {};
-  let cToday = 0, cNext7 = 0;
-
-  for (const t of all) {
-    byList[t.listId] = (byList[t.listId] || 0) + 1;
-    const dd = t.dueDate;
-    if (dd === today) cToday++;
-    if (dd && dd >= today && dd <= nextTo) cNext7++;
-  }
-
   for (const l of state.lists) {
-    const c = byList[l.id] || 0;
+    const c = Number(byList[l.id] || 0);
     document.querySelector(`[data-count="${l.id}"]`)?.replaceChildren(document.createTextNode(String(c)));
     if (l.folderId) byFolder[l.folderId] = (byFolder[l.folderId] || 0) + c;
   }
 
   for (const f of state.folders) {
-    const c = byFolder[f.id] || 0;
+    const c = Number(byFolder[f.id] || 0);
     document.querySelector(`[data-folder-count="${f.id}"]`)?.replaceChildren(document.createTextNode(String(c)));
   }
 
-  $("countAll").textContent = String(all.length);
-  $("countToday").textContent = String(cToday);
-  $("countNext7").textContent = String(cNext7);
-  $("countInbox").textContent = String(byList[state.system.inboxId] || 0);
+  $("countAll").textContent = String(data.activeTotal ?? 0);
+  $("countToday").textContent = String(data.today ?? 0);
+  $("countNext7").textContent = String(data.next7 ?? 0);
+  $("countInbox").textContent = String(data.inbox ?? 0);
+  $("countCompleted") && ($("countCompleted").textContent = String(data.completedTotal ?? 0));
+  $("countTrash") && ($("countTrash").textContent = String(data.trashTotal ?? 0));
+
+  await loadTags();
 }
 
+async function loadTags() {
+  try {
+    state.tags = await apiGetTags({ include_completed: "0" });
+  } catch {
+    state.tags = [];
+  }
+  renderTags();
+}
 async function loadMeta() {
   state.folders = await apiGetFolders();
   state.lists = await apiGetLists();
@@ -1430,8 +1678,14 @@ function openTask(t) {
   $("taskTags").value = (t.tags || []).map((x) => "#" + x).join(" ");
   $("taskListSelect").value = t.listId || state.system.inboxId || "";
   document.querySelectorAll("#taskPrio .prio-btn").forEach((b) => b.classList.toggle("active", Number(b.dataset.p) === Number(t.priority || 0)));
-  $("btnTaskToggle").textContent = t.completed ? "Вернуть" : "Готово";
-  $("btnTaskToggle").dataset.completed = t.completed ? "1" : "0";
+  if (t.trashed) {
+    $("btnTaskToggle").textContent = "Восстановить";
+    $("btnTaskToggle").dataset.mode = "restore";
+  } else {
+    $("btnTaskToggle").textContent = t.completed ? "Вернуть" : "Готово";
+    $("btnTaskToggle").dataset.mode = "toggle";
+    $("btnTaskToggle").dataset.completed = t.completed ? "1" : "0";
+  }
   openSheet("taskBackdrop", "taskSheet");
   $("taskTitle").focus();
 }
@@ -1844,24 +2098,26 @@ async function generateWeeklySummary() {
 
   $("rpDate").textContent = `На этой неделе (${from} — ${to})`;
 
-  // В базе нет completed_at, поэтому берём выполненные задачи по dueDate.
-  const done = await apiGetTasks({ filter: "completed", sort: "due", due_from: from, due_to: to });
+  // Используем completedAt (выполненные задачи за неделю)
+  const done = await apiGetTasks({ filter: "completed", sort: "completed", completed_from: from, completed_to: to });
 
   const byDate = new Map();
   for (const t of done) {
-    const k = t.dueDate || "";
+    const k = isoFromTs(t.completedAt) || "";
     if (!byDate.has(k)) byDate.set(k, []);
     byDate.get(k).push(t);
   }
 
-  const keys = [...byDate.keys()].sort();
+  const keys = [...byDate.keys()].filter(Boolean).sort();
 
   let html = `<h2>${s.getDate()} ${MONTHS_RU[s.getMonth()].slice(0,3)}. - ${e.getDate()} ${MONTHS_RU[e.getMonth()].slice(0,3)}.</h2>`;
   html += `<p><b>Выполнено</b></p>`;
 
   for (const k of keys) {
-    const label = k ? fmtDueShort(k) : "Без даты";
-    const items = byDate.get(k);
+    const [yy, mm, dd] = k.split("-");
+    const m = MONTHS_RU_SHORT[Math.max(0, Math.min(11, Number(mm) - 1))] || mm;
+    const label = `${Number(dd)} ${m}`;
+    const items = byDate.get(k) || [];
     html += `<ul>`;
     for (const t of items) {
       html += `<li>[${label}] ${escapeHtml(t.title)}</li>`;
@@ -1871,6 +2127,21 @@ async function generateWeeklySummary() {
 
   if (!keys.length) html += `<p class="muted">Нет выполненных задач за неделю</p>`;
 
+  // Незавершено (задачи на неделе по dueDate)
+  const todo = await apiGetTasks({ filter: "active", sort: "due", due_from: from, due_to: to });
+
+  html += `<h3>Незавершено</h3>`;
+  if (!todo.length) {
+    html += `<p class="muted">Нет незавершенных задач за неделю</p>`;
+  } else {
+    html += `<ul>`;
+    for (const t of todo) {
+      const d = t.dueDate ? (() => { const [yy,mm,dd]=t.dueDate.split("-"); const m=MONTHS_RU_SHORT[Math.max(0, Math.min(11, Number(mm)-1))]||mm; return `${Number(dd)} ${m}`; })() : "Без даты";
+      html += `<li>[${d}] ${escapeHtml(t.title)}</li>`;
+    }
+    html += `</ul>`;
+  }
+
   $("summaryEditor").innerHTML = html;
   localStorage.setItem(SUMMARY_KEY, $("summaryEditor").innerHTML);
 }
@@ -1878,6 +2149,189 @@ async function generateWeeklySummary() {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// Stats (TickTick-like)
+let _statsLoaded = false;
+let _statsLastDays = 14;
+
+function closeStatsModal() {
+  $("statsBackdrop") && ($("statsBackdrop").hidden = true);
+  $("statsModal") && ($("statsModal").hidden = true);
+}
+
+function openStatsModal() {
+  $("statsBackdrop") && ($("statsBackdrop").hidden = false);
+  $("statsModal") && ($("statsModal").hidden = false);
+  const sel = $("statsRange");
+  const days = sel ? Number(sel.value || 14) : 14;
+  setTimeout(() => loadStats(days).catch(() => {}), 0);
+}
+
+function chartColors() {
+  const cs = getComputedStyle(document.documentElement);
+  const get = (k, fb) => (cs.getPropertyValue(k) || "").trim() || fb;
+  return {
+    line: get("--blue2", "#6aa3ff"),
+    fill: get("--blue", "#2f7bff"),
+    grid: get("--line", "rgba(255,255,255,.07)"),
+    text: get("--muted", "rgba(255,255,255,.62)"),
+    danger: get("--danger", "#ff4d4d"),
+    bg: get("--panel2", "#232323"),
+  };
+}
+
+function prepCanvas(canvas) {
+  if (!canvas) return null;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(10, canvas.clientWidth || canvas.width || 300);
+  const h = Math.max(10, canvas.getAttribute("height") ? Number(canvas.getAttribute("height")) : (canvas.clientHeight || 160));
+  canvas.width = Math.floor(w * dpr);
+  canvas.height = Math.floor(h * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+function drawLineChart(canvas, values, { yMax = null, fill = false } = {}) {
+  const prep = prepCanvas(canvas);
+  if (!prep) return;
+  const { ctx, w, h } = prep;
+  const col = chartColors();
+
+  ctx.clearRect(0, 0, w, h);
+
+  const padL = 32, padR = 12, padT = 10, padB = 24;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  const vals = (values || []).map((v) => (v === null || v === undefined) ? 0 : Number(v));
+  const maxV = yMax !== null ? yMax : Math.max(1, ...vals);
+
+  // grid
+  ctx.strokeStyle = col.grid;
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + (plotH * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+  }
+
+  // line
+  const n = vals.length;
+  if (!n) return;
+
+  const xAt = (i) => padL + (plotW * (n === 1 ? 0 : i / (n - 1)));
+  const yAt = (v) => padT + plotH - (plotH * (v / maxV));
+
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = xAt(i);
+    const y = yAt(vals[i]);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = col.line;
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+
+  if (fill) {
+    ctx.lineTo(xAt(n - 1), padT + plotH);
+    ctx.lineTo(xAt(0), padT + plotH);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+    g.addColorStop(0, col.line + "55");
+    g.addColorStop(1, col.line + "00");
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+}
+
+function drawBarChart(canvas, values, { yMax = 100 } = {}) {
+  const prep = prepCanvas(canvas);
+  if (!prep) return;
+  const { ctx, w, h } = prep;
+  const col = chartColors();
+  ctx.clearRect(0, 0, w, h);
+
+  const padL = 32, padR = 12, padT = 10, padB = 24;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // grid
+  ctx.strokeStyle = col.grid;
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + (plotH * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+  }
+
+  const vals = (values || []).map((v) => (v === null || v === undefined) ? null : Number(v));
+  const n = vals.length;
+  if (!n) return;
+
+  const gap = 6;
+  const barW = Math.max(6, (plotW - gap * (n - 1)) / n);
+
+  for (let i = 0; i < n; i++) {
+    const v = vals[i];
+    const x = padL + i * (barW + gap);
+    if (v === null) {
+      ctx.fillStyle = col.grid;
+      ctx.fillRect(x, padT + plotH - 2, barW, 2);
+      continue;
+    }
+    const hh = Math.max(2, plotH * (v / yMax));
+    ctx.fillStyle = col.line;
+    ctx.fillRect(x, padT + plotH - hh, barW, hh);
+  }
+}
+
+async function loadStats(days = 14) {
+  const d = Math.max(7, Math.min(365, Number(days) || 14));
+  _statsLastDays = d;
+
+  // skeleton
+  $("stTasks") && ($("stTasks").textContent = "…");
+  $("stDone") && ($("stDone").textContent = "…");
+  $("stLists") && ($("stLists").textContent = "…");
+  $("stDays") && ($("stDays").textContent = "…");
+
+  const data = await apiGetStats(d);
+  const totals = data?.totals || {};
+  const series = data?.series || {};
+
+  $("stTasks") && ($("stTasks").textContent = String(totals.tasksTotal ?? 0));
+  $("stDone") && ($("stDone").textContent = String(totals.completedTotal ?? 0));
+  $("stLists") && ($("stLists").textContent = String(totals.listsTotal ?? 0));
+  $("stDays") && ($("stDays").textContent = String(totals.daysActive ?? 0));
+
+  $("stToday") && ($("stToday").textContent = String(totals.completedToday ?? 0));
+  $("stTotalDone") && ($("stTotalDone").textContent = String(totals.completedTotal ?? 0));
+  $("stPoints") && ($("stPoints").textContent = String(totals.points ?? 0));
+
+  const doneCounts = series.completed || [];
+  const rates = series.completionRate || [];
+
+  // points curve (window-based)
+  const pointsSeries = [];
+  let acc = 0;
+  for (const v of doneCounts) {
+    acc += (Number(v) || 0) * 5;
+    pointsSeries.push(acc);
+  }
+
+  drawLineChart($("chartPoints"), pointsSeries, { fill: true });
+  drawLineChart($("chartDone"), doneCounts, { fill: true });
+  drawBarChart($("chartRate"), rates, { yMax: 100 });
+
+  _statsLoaded = true;
+}
+
 
 // Account menu & settings modal
 function toggleAccountMenu() {
@@ -1903,6 +2357,18 @@ function setSettingsTab(label) {
 
   const email = auth.user?.email || 'guest@local';
   const isGuest = !auth.user || auth.user.id === 'public';
+
+  if (label === 'Премиум') {
+    box.innerHTML = `
+      <h2 style="margin:0 0 12px;font-weight:950">Премиум</h2>
+      <div class="card">
+        <div class="row"><span>Статус</span><span class="muted">Бесплатный</span></div>
+        <div class="row"><span class="muted">Функции</span><span class="muted">Скоро</span></div>
+      </div>
+      <div class="hint-card">Здесь можно будет подключить Pro‑функции (пример как в TickTick).</div>
+    `;
+    return;
+  }
 
   if (label === 'Внешний вид') {
     box.innerHTML = `
@@ -2121,9 +2587,24 @@ document.querySelectorAll('.drawer-item[data-kind="smart"]').forEach((b) => {
   on(b, "click", () => setActive("smart", b.dataset.id));
 });
 
-on($("btnSort"), "click", () => openSheet("sortBackdrop", "sortSheet"));
+function openSortSheet() {
+  // In Trash we show an extra action like TickTick ("Empty Trash")
+  const btn = $("sortEmptyTrash");
+  if (btn) btn.hidden = !(state.activeKind === "smart" && state.activeId === "trash");
+  openSheet("sortBackdrop", "sortSheet");
+}
+
+on($("btnSort"), "click", openSortSheet);
 on($("sortBackdrop"), "click", () => closeSheet("sortBackdrop", "sortSheet"));
 on($("sortCancel"), "click", () => closeSheet("sortBackdrop", "sortSheet"));
+on($("sortEmptyTrash"), "click", async () => {
+  if (!(state.activeKind === "smart" && state.activeId === "trash")) return;
+  if (!confirm("Очистить корзину? Это удалит задачи навсегда.")) return;
+  await apiEmptyTrash();
+  closeSheet("sortBackdrop", "sortSheet");
+  await refreshCounts();
+  await loadTasks();
+});
 document.querySelectorAll('.sheet-option[data-sort]').forEach((b) => on(b, "click", () => { settings.sort = b.dataset.sort; save(); closeSheet("sortBackdrop", "sortSheet"); loadTasks(); }));
 
 on($("btnAdd"), "click", () => openSheet("addBackdrop", "addSheet"));
@@ -2248,7 +2729,11 @@ on($("teNotes"), "input", () => {
 on($("teToggle"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
   if (!t) return;
-  await patchSelectedTask({ completed: !t.completed }, { reload: true });
+  if (t.trashed) {
+    await patchSelectedTask({ trashed: false }, { reload: true });
+  } else {
+    await patchSelectedTask({ completed: !t.completed }, { reload: true });
+  }
 });
 on($("teListBtn"), "click", async (e) => {
   const t = getTaskById(state.selectedTaskId);
@@ -2342,8 +2827,8 @@ on($("teMore"), "click", async () => {
       value: "delete",
       icon: '<svg class="ico sm"><use href="#i-trash"></use></svg>',
       onSelect: async () => {
-        if (!confirm("Удалить задачу?")) return;
-        await apiDeleteTask(t.id);
+        if (!confirm(t.trashed ? "Удалить навсегда?" : "Переместить в корзину?")) return;
+        await apiDeleteTask(t.id, { hard: !!t.trashed });
         closeTaskEditor();
         await refreshCounts();
         await loadTasks();
@@ -2364,8 +2849,31 @@ on($("taskListSelect"), 'change', async () => {
 });
 
 document.querySelectorAll("#taskPrio .prio-btn").forEach((b) => on(b, "click", () => { document.querySelectorAll("#taskPrio .prio-btn").forEach((x) => x.classList.toggle("active", x === b)); }));
-on($("btnTaskDelete"), "click", async () => { const id = state.editing.taskId; if (!id) return; if (!confirm("Удалить задачу?")) return; await apiDeleteTask(id); closeSheet("taskBackdrop", "taskSheet"); await refreshCounts(); await loadTasks(); });
-on($("btnTaskToggle"), "click", async () => { const id = state.editing.taskId; if (!id) return; const isDone = $("btnTaskToggle").dataset.completed === "1"; await apiPatchTask(id, { completed: !isDone }); closeSheet("taskBackdrop", "taskSheet"); await refreshCounts(); await loadTasks(); });
+on($("btnTaskDelete"), "click", async () => {
+  const id = state.editing.taskId;
+  if (!id) return;
+  const t = getTaskById(id);
+  const isTrash = !!t?.trashed;
+  if (!confirm(isTrash ? "Удалить навсегда?" : "Переместить в корзину?")) return;
+  await apiDeleteTask(id, { hard: isTrash });
+  closeSheet("taskBackdrop", "taskSheet");
+  await refreshCounts();
+  await loadTasks();
+});
+on($("btnTaskToggle"), "click", async () => {
+  const id = state.editing.taskId;
+  if (!id) return;
+  const mode = $("btnTaskToggle").dataset.mode || "toggle";
+  if (mode === "restore") {
+    await apiPatchTask(id, { trashed: false });
+  } else {
+    const isDone = $("btnTaskToggle").dataset.completed === "1";
+    await apiPatchTask(id, { completed: !isDone });
+  }
+  closeSheet("taskBackdrop", "taskSheet");
+  await refreshCounts();
+  await loadTasks();
+});
 on($("taskForm"), "submit", async (e) => {
   e.preventDefault();
   const id = state.editing.taskId;
@@ -2448,6 +2956,9 @@ on($("menuLogin"), "click", () => { $("accountMenu").hidden = true; openAuth("lo
 on($("menuRegister"), "click", () => { $("accountMenu").hidden = true; openAuth("register"); });
 on($("menuLogout"), "click", () => { $("accountMenu").hidden = true; logout(); });
 on($("menuSettings"), "click", () => { $("accountMenu").hidden = true; openSettings(); });
+on($("menuStats"), "click", () => { $("accountMenu").hidden = true; openStatsModal(); });
+on($("menuPremium"), "click", () => { $("accountMenu").hidden = true; openSettings(); setSettingsTab("Премиум"); });
+
 on($("menuTheme"), "click", () => { $("accountMenu").hidden = true; toggleTheme(); });
 on($("menuHotkeys"), "click", () => { $("accountMenu").hidden = true; openSettings(); setSettingsTab("Горячие клавиши"); });
 on($("menuAbout"), "click", () => { $("accountMenu").hidden = true; openSettings(); setSettingsTab("О приложении"); });
@@ -2456,6 +2967,26 @@ on($("menuAbout"), "click", () => { $("accountMenu").hidden = true; openSettings
 
 on($("settingsBackdrop"), "click", closeSettings);
 on($("settingsClose"), "click", closeSettings);
+
+// stats modal
+on($("statsBackdrop"), "click", closeStatsModal);
+on($("statsClose"), "click", closeStatsModal);
+on($("statsApply"), "click", async () => {
+  const days = Number($("statsRange")?.value || 14);
+  await loadStats(days);
+});
+on($("statsRange"), "change", async () => {
+  if ($("statsModal")?.hidden) return;
+  const days = Number($("statsRange")?.value || 14);
+  await loadStats(days);
+});
+document.querySelectorAll(".stats-tab").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".stats-tab").forEach((x) => x.classList.toggle("active", x === b));
+    // only "overview" is implemented; keep UI consistent
+  });
+});
+
 
 // settings nav
 document.querySelectorAll('.modal-nav .mnav-item').forEach((b)=>{

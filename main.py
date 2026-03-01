@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os, json
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, HTTPException, Depends, status, Response, Cookie, Request
@@ -204,6 +204,8 @@ tasks = Table(
     Column("priority", Integer, nullable=False, server_default="0"),
     Column("notes", Text, nullable=True),
     Column("tags_json", Text, nullable=False, server_default="[]"),
+    Column("trashed", Boolean, nullable=False, server_default="false"),
+    Column("trashed_at", BigInteger, nullable=True),
 )
 
 def now_ts() -> int:
@@ -304,7 +306,10 @@ def init_db():
             "order_index": "order_index BIGINT",
             "priority": "priority INTEGER NOT NULL DEFAULT 0",
             "notes": "notes TEXT",
-            "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",
+            "completed_at": "completed_at BIGINT",
+            "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",            "trashed": "trashed BOOLEAN NOT NULL DEFAULT false",
+            "trashed_at": "trashed_at BIGINT",
+
         })
 
         # Backfill list_id for old rows (best-effort)
@@ -399,8 +404,8 @@ with engine.begin() as conn:
 app = FastAPI(title="TickTick-like ToDo (v4-fixed)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
-Filter = Literal["all", "active", "completed"]
-Sort = Literal["due", "created", "manual"]
+Filter = Literal["all", "active", "completed", "trash"]
+Sort = Literal["due", "created", "manual", "completed", "trashed"]
 
 class FolderCreate(BaseModel):
     title: str = Field(min_length=1, max_length=60)
@@ -460,6 +465,7 @@ class TaskUpdate(BaseModel):
     tags: Optional[List[str]] = None
     priority: Optional[int] = Field(default=None, ge=0, le=3)
     notes: Optional[Optional[str]] = None
+    trashed: Optional[bool] = None
 
 class ReorderPayload(BaseModel):
     listId: str
@@ -474,6 +480,8 @@ class TaskOut(BaseModel):
     tags: List[str] = Field(default_factory=list)
     priority: int = 0
     notes: Optional[str] = None
+    trashed: bool = False
+    trashedAt: Optional[int] = None
 
 def to_folder_out(r): return FolderOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]))
 def to_list_out(r): return ListOut(id=r["id"], title=r["title"], emoji=r["emoji"], sortOrder=int(r["sort_order"]), folderId=r.get("folder_id"), systemKey=r.get("system_key"))
@@ -487,7 +495,9 @@ def to_task_out(r):
         orderIndex=(int(r["order_index"]) if r.get("order_index") is not None else None),
         tags=parse_tags_json(r.get("tags_json") or "[]"),
         priority=int(r.get("priority") or 0),
-        notes=r.get("notes")
+        notes=r.get("notes"),
+        trashed=bool(r.get("trashed") or False),
+        trashedAt=(int(r.get("trashed_at")) if r.get("trashed_at") is not None else None),
     )
 
 def inbox_list_id(conn, user_id: str) -> str:
@@ -817,17 +827,39 @@ def reorder_sections(payload: ReorderSimple, user=Depends(require_user)):
 
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=None, due: Optional[str]=None,
-              due_from: Optional[str]=None, due_to: Optional[str]=None, q: Optional[str]=None,
+              due_from: Optional[str]=None, due_to: Optional[str]=None,
+              completed_from: Optional[str]=None, completed_to: Optional[str]=None,
+              q: Optional[str]=None,
               tag: Optional[str]=None, priority: Optional[int]=None, user=Depends(require_user)):
     conds=[]
     # Always filter by user
     conds.append(tasks.c.user_id == user["id"])
-    if filter=="active": conds.append(tasks.c.completed.is_(False))
-    elif filter=="completed": conds.append(tasks.c.completed.is_(True))
+    if filter=="active":
+        conds.append(tasks.c.completed.is_(False))
+        conds.append(tasks.c.trashed.is_(False))
+    elif filter=="completed":
+        conds.append(tasks.c.completed.is_(True))
+        conds.append(tasks.c.trashed.is_(False))
+    elif filter=="trash":
+        conds.append(tasks.c.trashed.is_(True))
+    else:
+        # all (but not trashed)
+        conds.append(tasks.c.trashed.is_(False))
     if list_id: conds.append(tasks.c.list_id==list_id)
     if due is not None:
         dd = validate_date_str(due)
         conds.append(tasks.c.due_date==dd)
+    if completed_from is not None or completed_to is not None:
+        cf = validate_date_str(completed_from) if completed_from else None
+        ct = validate_date_str(completed_to) if completed_to else None
+        conds.append(tasks.c.completed_at.is_not(None))
+        if cf:
+            start = int(datetime.strptime(cf, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
+            conds.append(tasks.c.completed_at >= start)
+        if ct:
+            end = int((datetime.strptime(ct, '%Y-%m-%d').replace(tzinfo=timezone.utc) + timedelta(days=1)).timestamp())
+            conds.append(tasks.c.completed_at < end)
+
     if due_from is not None or due_to is not None:
         df = validate_date_str(due_from) if due_from else None
         dt = validate_date_str(due_to) if due_to else None
@@ -845,6 +877,12 @@ def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=No
 
     if sort=="created":
         stmt = stmt.order_by(tasks.c.created_at.desc())
+    elif sort=="completed":
+        nulls_last = case((tasks.c.completed_at.is_(None),1), else_=0)
+        stmt = stmt.order_by(nulls_last.asc(), tasks.c.completed_at.desc(), tasks.c.created_at.desc())
+    elif sort=="trashed":
+        nulls_last = case((tasks.c.trashed_at.is_(None),1), else_=0)
+        stmt = stmt.order_by(nulls_last.asc(), tasks.c.trashed_at.desc(), tasks.c.created_at.desc())
     elif sort=="manual":
         nulls_last = case((tasks.c.order_index.is_(None),1), else_=0)
         stmt = stmt.order_by(nulls_last.asc(), tasks.c.order_index.asc(), tasks.c.created_at.desc())
@@ -884,6 +922,7 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
             id=tid,user_id=user["id"],title=title,completed=False,created_at=ts,updated_at=ts,completed_at=None,
             list_id=list_id,section_id=section_id,due_date=due,order_index=order_index,
             priority=int(payload.priority or 0),
+            trashed=False, trashed_at=None,
             notes=(payload.notes.strip() if payload.notes else None),
             tags_json=dumps_tags(payload.tags)
         ).returning(tasks)
@@ -928,6 +967,10 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
     if payload.tags is not None: values["tags_json"]=dumps_tags(payload.tags)
     if payload.priority is not None: values["priority"]=int(payload.priority)
     if payload.notes is not None: values["notes"]=payload.notes.strip() if payload.notes else None
+    if payload.trashed is not None:
+        tr = bool(payload.trashed)
+        values["trashed"] = tr
+        values["trashed_at"] = now_ts() if tr else None
     if not values: raise HTTPException(status_code=400, detail="Nothing to update")
     values["updated_at"]=now_ts()
     stmt = update(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])).values(**values).returning(tasks)
@@ -961,11 +1004,163 @@ def reorder_tasks(payload: ReorderPayload, user=Depends(require_user)):
     return {"ok": True}
 
 @app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: str, user=Depends(require_user)):
+def delete_task(task_id: str, hard: bool = False, user=Depends(require_user)):
+    """Delete task.
+
+    - Default: move to Trash (soft delete).
+    - If already in Trash OR hard=true: permanently delete.
+    """
     with engine.begin() as conn:
-        res = conn.execute(delete(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])))
-        if res.rowcount==0: raise HTTPException(status_code=404, detail="Task not found")
-    return {"deleted": True}
+        row = conn.execute(select(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"]))).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if hard or bool(row.get("trashed")):
+            res = conn.execute(delete(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])))
+            if res.rowcount==0:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return {"deleted": True}
+        conn.execute(update(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])).values(trashed=True, trashed_at=now_ts(), updated_at=now_ts()))
+    return {"trashed": True}
+
+
+class TagOut(BaseModel):
+    tag: str
+    count: int
+
+@app.post('/api/trash/empty')
+def empty_trash(user=Depends(require_user)):
+    with engine.begin() as conn:
+        conn.execute(delete(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.trashed.is_(True))))
+    return {"ok": True}
+
+@app.get('/api/tags', response_model=List[TagOut])
+def list_tags(include_completed: bool = False, user=Depends(require_user)):
+    # Return tag counts for the sidebar.
+    with engine.connect() as conn:
+        conds = [tasks.c.user_id==user['id'], tasks.c.trashed.is_(False)]
+        if not include_completed:
+            conds.append(tasks.c.completed.is_(False))
+        rows = conn.execute(select(tasks.c.tags_json).where(and_(*conds))).all()
+    counts = {}
+    for (s,) in rows:
+        for t in parse_tags_json(s or '[]'):
+            counts[t] = counts.get(t, 0) + 1
+    out = [TagOut(tag=k, count=v) for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))]
+    return out
+
+@app.get('/api/counts')
+def get_counts(user=Depends(require_user)):
+    # Aggregated counters for smart lists and sidebar.
+    today = today_str()
+    next_to = (date.today() + timedelta(days=6)).isoformat()
+    with engine.connect() as conn:
+        inbox_id = inbox_list_id(conn, user['id'])
+        active_conds = and_(tasks.c.user_id==user['id'], tasks.c.completed.is_(False), tasks.c.trashed.is_(False))
+
+        active_total = conn.execute(select(text('COUNT(*)')).select_from(tasks).where(active_conds)).scalar_one()
+        completed_total = conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.completed.is_(True), tasks.c.trashed.is_(False)))).scalar_one()
+        trash_total = conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.trashed.is_(True)))).scalar_one()
+
+        today_count = conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(active_conds, tasks.c.due_date==today))).scalar_one()
+        next7_count = conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(active_conds, tasks.c.due_date.is_not(None), tasks.c.due_date>=today, tasks.c.due_date<=next_to))).scalar_one()
+        inbox_count = conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(active_conds, tasks.c.list_id==inbox_id))).scalar_one()
+
+        rows = conn.execute(
+            select(tasks.c.list_id, text('COUNT(*) as c')).where(active_conds).group_by(tasks.c.list_id)
+        ).all()
+        by_list = {lid: int(c) for lid, c in rows}
+
+    return {
+        'activeTotal': int(active_total),
+        'completedTotal': int(completed_total),
+        'trashTotal': int(trash_total),
+        'today': int(today_count),
+        'next7': int(next7_count),
+        'inbox': int(inbox_count),
+        'byList': by_list,
+    }
+
+@app.get('/api/stats')
+def get_stats(days: int = 14, user=Depends(require_user)):
+    # Statistics for the dashboard (UTC-based).
+    days = max(7, min(365, int(days)))
+    end_d = datetime.now(tz=timezone.utc).date()
+    start_d = end_d - timedelta(days=days-1)
+
+    def dstr(d: date) -> str:
+        return d.isoformat()
+
+    start_ts = int(datetime.combine(start_d, datetime.min.time(), tzinfo=timezone.utc).timestamp())
+    end_ts = int(datetime.combine(end_d + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).timestamp())
+
+    with engine.connect() as conn:
+        tasks_total = int(conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.trashed.is_(False)))).scalar_one())
+        completed_total = int(conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.completed.is_(True), tasks.c.trashed.is_(False)))).scalar_one())
+        lists_total = int(conn.execute(select(text('COUNT(*)')).select_from(lists).where(lists.c.user_id==user['id'])).scalar_one())
+        trash_total = int(conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.trashed.is_(True)))).scalar_one())
+
+        first_task_ts = conn.execute(select(tasks.c.created_at).where(tasks.c.user_id==user['id']).order_by(tasks.c.created_at.asc()).limit(1)).scalar()
+        first_ts = int(first_task_ts) if first_task_ts is not None else int(user.get('created_at') or now_ts())
+
+        today = datetime.now(tz=timezone.utc).date()
+        t0 = int(datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).timestamp())
+        t1 = int(datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).timestamp())
+        completed_today = int(conn.execute(select(text('COUNT(*)')).select_from(tasks).where(and_(tasks.c.user_id==user['id'], tasks.c.completed.is_(True), tasks.c.trashed.is_(False), tasks.c.completed_at.is_not(None), tasks.c.completed_at>=t0, tasks.c.completed_at<t1))).scalar_one())
+
+        done_rows = conn.execute(
+            select(tasks.c.completed_at).where(and_(tasks.c.user_id==user['id'], tasks.c.completed.is_(True), tasks.c.trashed.is_(False), tasks.c.completed_at.is_not(None), tasks.c.completed_at>=start_ts, tasks.c.completed_at<end_ts))
+        ).all()
+        done_by_day = {}
+        for (ts,) in done_rows:
+            try:
+                day = datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat()
+                done_by_day[day] = done_by_day.get(day, 0) + 1
+            except Exception:
+                pass
+
+        due_rows = conn.execute(
+            select(tasks.c.due_date, tasks.c.completed).where(and_(tasks.c.user_id==user['id'], tasks.c.trashed.is_(False), tasks.c.due_date.is_not(None), tasks.c.due_date>=dstr(start_d), tasks.c.due_date<=dstr(end_d)))
+        ).all()
+        due_total_by_day = {}
+        due_done_by_day = {}
+        for dd, comp in due_rows:
+            if not dd:
+                continue
+            due_total_by_day[dd] = due_total_by_day.get(dd, 0) + 1
+            if comp:
+                due_done_by_day[dd] = due_done_by_day.get(dd, 0) + 1
+
+    dates = []
+    completed_counts = []
+    completion_rates = []
+    for i in range(days):
+        d = start_d + timedelta(days=i)
+        ds = d.isoformat()
+        dates.append(ds)
+        completed_counts.append(int(done_by_day.get(ds, 0)))
+        tot = int(due_total_by_day.get(ds, 0))
+        done = int(due_done_by_day.get(ds, 0))
+        completion_rates.append(None if tot == 0 else round(done * 100.0 / tot, 1))
+
+    days_active = max(1, int((now_ts() - first_ts) // 86400) + 1)
+    points = completed_total * 5 + tasks_total
+
+    return {
+        'totals': {
+            'tasksTotal': tasks_total,
+            'completedTotal': completed_total,
+            'listsTotal': lists_total,
+            'trashTotal': trash_total,
+            'daysActive': days_active,
+            'completedToday': completed_today,
+            'points': points,
+        },
+        'series': {
+            'dates': dates,
+            'completed': completed_counts,
+            'completionRate': completion_rates,
+        }
+    }
 
 FRONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 if os.path.isdir(FRONT_DIR):

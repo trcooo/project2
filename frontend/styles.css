@@ -12,6 +12,7 @@
   --line2:rgba(255,255,255,.10);
   --blue:#2f7bff;
   --blue2:#6aa3ff;
+  --danger:#ff4d4d;
   --shadow:0 14px 40px rgba(0,0,0,.38);
   --radius:14px;
   --radius2:18px;
@@ -38,6 +39,7 @@
   --muted:rgba(15,23,42,.55);
   --line:rgba(15,23,42,.10);
   --line2:rgba(15,23,42,.14);
+  --danger:#d21f2b;
   --blue:#2563eb;
   --blue2:#1d4ed8;
   --shadow:0 18px 45px rgba(15,23,42,.12);
@@ -328,6 +330,7 @@ body[data-dense="0"] #tasksLayout:not(.split) .task-card{background:rgba(255,255
 .sheet-title{max-width:520px;margin:0 auto 10px;font-weight:900;color:var(--text)}
 .sheet-option{max-width:520px;margin:0 auto 10px;width:100%;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);padding:14px;border-radius:16px;cursor:pointer;font-weight:900;text-align:left}
 .sheet-option.ghost{background:transparent}
+.sheet-option.danger{color:var(--danger);border-color:rgba(255,77,77,.35)}
 .sheet-form{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
 .sheet-form input[type="text"], .sheet-form select{width:100%;padding:14px;border-radius:16px;border:1px solid var(--line);font-size:16px;outline:none;background:rgba(255,255,255,.03);color:var(--text)}
 .sheet-form textarea{width:100%;padding:14px;border-radius:16px;border:1px solid var(--line);font-size:15px;outline:none;background:rgba(255,255,255,.03);color:var(--text);min-height:92px;resize:vertical}
@@ -445,6 +448,8 @@ body[data-hints="0"] .hint-card{display:none}
 /* Due styling (right column) */
 .rm-due.due-over{color:#ff4d4d;font-weight:950}
 .rm-due.due-today{color:var(--blue2);font-weight:950}
+.rm-due.trash-date{color:var(--danger);font-weight:950}
+.rm-due.done-date{color:var(--muted);font-weight:900}
 
 /* Dense UI: even in split mode use flat rows */
 body[data-dense="1"] #tasksLayout.split .tasks{gap:0}
@@ -527,3 +532,34 @@ body[data-module="search"] .tb-right{display:none}
 
 
 .auth-floating{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:201}
+
+/* Stats modal */
+.modal.stats{inset:5vh 4vw;max-width:1100px;margin:0 auto}
+.stats-top{display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--line);background:rgba(22,22,22,.98)}
+.stats-title{font-weight:950;font-size:20px;letter-spacing:.2px}
+.stats-tabs{display:flex;gap:6px;border:1px solid var(--line);background:rgba(255,255,255,.03);border-radius:14px;padding:4px}
+.stats-tab{border:0;background:transparent;color:rgba(232,232,232,.7);font-weight:900;border-radius:10px;padding:8px 12px;cursor:pointer}
+.stats-tab.active{background:rgba(47,123,255,.20);color:var(--text)}
+.stats-body{padding:14px 16px;overflow:auto;flex:1}
+.stats-strip{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.stat-pill{display:flex;flex-direction:column;gap:2px;min-width:110px;padding:10px 12px;border-radius:16px;border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.stat-pill b{font-size:18px;font-weight:950}
+.stat-pill span{font-size:12px;color:rgba(232,232,232,.65);font-weight:800}
+.stat-note{margin-left:auto;color:rgba(232,232,232,.55);font-weight:800;font-size:12px}
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stats-card{padding:14px 14px 10px}
+.stats-card-title{font-weight:950;margin-bottom:10px}
+.stats-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.stats-points{font-weight:950}
+.stats-kpis{display:flex;gap:14px}
+.kpi{flex:1;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.kpi-num{font-size:36px;font-weight:950;color:rgba(47,123,255,.95)}
+.kpi-lab{font-size:12px;color:rgba(232,232,232,.65);font-weight:900}
+.stats-range{display:flex;align-items:center;gap:8px}
+.stats-card canvas{width:100%;max-width:100%;display:block;border-radius:14px;border:1px solid rgba(255,255,255,.06);background:rgba(0,0,0,.22)}
+
+@media (max-width: 920px){
+  .modal.stats{inset:0;border-radius:0;max-width:none}
+  .stats-grid{grid-template-columns:1fr}
+  .stat-note{width:100%;margin-left:0}
+}
