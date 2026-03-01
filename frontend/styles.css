@@ -710,3 +710,19 @@ body[data-module="search"] .tb-right{display:none}
   border-bottom:1px solid rgba(16,24,40,.08);
 }
 
+
+
+/* Today view (TickTick reference) */
+body[data-mode="today"] .pane-head{display:flex !important;margin-top:10px;padding:0 4px}
+body[data-mode="today"] .ph-title,body[data-mode="today"] .ph-count{font-size:14px;font-weight:950}
+body[data-mode="today"] .ph-left{gap:8px;align-items:center}
+body[data-mode="today"] .desk-addbar{display:flex !important;background:var(--card);border:1px solid var(--line);border-radius:12px}
+body[data-mode="today"] .desk-addbar input{font-size:15px}
+body[data-mode="today"] .due,body[data-mode="today"] .task-actions{display:none !important}
+body[data-mode="today"] .composer{display:none !important}
+body[data-mode="today"] #groups{margin-top:10px}
+body[data-mode="today"] #completedHead{margin-top:18px}
+.dab-icon.split{gap:6px;display:inline-flex;align-items:center;justify-content:center}
+.dab-icon.is-set{border-color:rgba(47,123,255,.55);color:var(--blue2)}
+.task-meta .m-due{color:var(--blue2);font-weight:950}
+.task-meta .m-list{color:var(--muted);font-weight:850}

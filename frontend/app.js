@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v25-layout-fix-no-calendar-leak");
+console.log("ClockTime build v26-today-ui-inbox-due");
 
 const settings = (() => {
   const defaults = {
@@ -75,6 +75,16 @@ function openPopover(anchorEl, items, { title = null, width = 260 } = {}) {
   p.style.top = `${top}px`;
   p.style.left = `${Math.max(10, left)}px`;
   p.hidden = false;
+  // keep popover inside viewport (use above anchor if needed)
+  requestAnimationFrame(() => {
+    const h = p.offsetHeight || 0;
+    const curTop = parseFloat(p.style.top || "0") || 0;
+    if (curTop + h > window.innerHeight - 10) {
+      const rr = anchorEl.getBoundingClientRect();
+      const newTop = Math.max(10, rr.top - h - 8);
+      p.style.top = `${newTop}px`;
+    }
+  });
 
   // close on outside click
   setTimeout(() => {
@@ -456,6 +466,11 @@ function closeSheet(b, s) { $(b).hidden = true; $(s).hidden = true; }
 function applyLayout() {
   document.body.dataset.module = state.module;
   document.body.dataset.view = state.view;
+  // Mode for view-specific styling (today/inbox/list/...)
+  if (state.view !== "tasks") { delete document.body.dataset.mode; }
+  else {
+    document.body.dataset.mode = (state.activeKind === "smart") ? (state.activeId || "smart") : (state.activeKind || "normal");
+  }
 
   applyModules();
 
@@ -492,25 +507,28 @@ function applyLayout() {
   // Add is disabled for smart views like Completed/Trash
   const allowAdd = !(state.activeKind === "smart" && (state.activeId === "completed" || state.activeId === "trash"));
 
-  // Mobile composer only (desktop uses top add bar like TickTick)
-  $("composer").style.display = (!isDesktop() && state.view === "tasks" && allowAdd) ? "flex" : "none";
-  const dab = $("deskAddbar");
-  if (dab) dab.hidden = !(isDesktop() && state.view === "tasks" && allowAdd);
+const isSmartToday = (state.activeKind === "smart" && state.activeId === "today");
+const isSmartInbox = (state.activeKind === "smart" && state.activeId === "inbox");
+const inboxId = state.system?.inboxId;
 
-  // Active rail
-  document.querySelectorAll(".rail-item[data-module]").forEach((b) => {
-    b.classList.toggle("active", b.dataset.module === state.module);
-  });
+// Mobile composer vs top add bar:
+// - Desktop: always use top add bar
+// - Mobile: use bottom composer, EXCEPT Today (TickTick-like inline add)
+const composerEl = $("composer");
+if (composerEl) composerEl.style.display = (!isDesktop() && state.view === "tasks" && allowAdd && !isSmartToday) ? "flex" : "none";
 
-  // Calendar title
-  if (state.view === "calendar") {
-    $("pageTitle").textContent = MONTHS_RU[state.calendarCursor.getMonth()];
-    $("calTitle").textContent = MONTHS_RU[state.calendarCursor.getMonth()];
-  }
+const dab = $("deskAddbar");
+if (dab) dab.hidden = !(((isDesktop() && state.view === "tasks" && allowAdd)) || (isSmartToday && state.view === "tasks" && allowAdd));
 
-  // Pane header/sub only for list view on desktop (closer to TickTick)
-  if ($("paneHead")) $("paneHead").hidden = !(isDesktop() && state.view === 'tasks' && state.activeKind === 'list');
-  if ($("paneSub")) $("paneSub").hidden = !(isDesktop() && state.view === 'tasks' && state.activeKind === 'list');
+// Pane header: show on Desktop list OR on Today (all widths) to match reference
+const showPaneHead = (state.view === 'tasks' && ((isDesktop() && state.activeKind === 'list') || isSmartToday));
+if ($("paneHead")) $("paneHead").hidden = !showPaneHead;
+
+// Pane sub only for list view on desktop
+if ($("paneSub")) $("paneSub").hidden = !(isDesktop() && state.view === 'tasks' && state.activeKind === 'list');
+
+// Sync addbar controls visibility (today/inbox)
+if (typeof syncComposerUi === "function") syncComposerUi();
 }
 
 function applyModules() {
@@ -614,12 +632,16 @@ function updatePageTitle() {
 }
 
 function updateAddPlaceholder() {
+  const inSmartToday = (state.activeKind === "smart" && state.activeId === "today");
+  const inSmartInbox = (state.activeKind === "smart" && state.activeId === "inbox");
   const listId = state.activeKind === "list" ? state.activeId : (state.composer.listId || state.system.inboxId);
   const list = state.lists.find((l) => l.id === listId);
   const name = list?.title || "Входящие";
   const el = $("deskAddInput");
   if (el) {
-    if (state.activeKind === 'list' && state.composer.sectionId) {
+    if (inSmartToday || inSmartInbox) {
+      el.placeholder = "Добавить задачу";
+    } else     if (state.activeKind === 'list' && state.composer.sectionId) {
       const sid = state.composer.sectionId;
       const sec = (state.sections || []).find((s) => s.id === sid) || null;
       const secName = sec?.title || 'секцию';
@@ -630,6 +652,81 @@ function updateAddPlaceholder() {
   }
   const lb = $("deskListBtn");
   if (lb) lb.title = name;
+}
+
+
+function isInboxView() {
+  const inboxId = state.system?.inboxId;
+  if (!inboxId) return false;
+  return (state.activeKind === "smart" && state.activeId === "inbox") || (state.activeKind === "list" && state.activeId === inboxId);
+}
+
+function setComposerDue(v) {
+  state.composer.dueDate = v || null;
+  const cd = $("compDueDate");
+  if (cd) cd.value = v || "";
+  const dd = $("deskDueDate");
+  if (dd) dd.value = v || "";
+  updateDueIndicators();
+}
+
+function updateDueIndicators() {
+  const has = !!state.composer.dueDate;
+  ["compDueBtn", "deskDueBtn"].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.toggle("is-set", has);
+  });
+}
+
+// Show/hide controls depending on current mode (Today/InBox/etc)
+function syncComposerUi() {
+  const isToday = (state.activeKind === "smart" && state.activeId === "today");
+  const inInbox = isInboxView();
+
+  const deskDue = $("deskDueBtn");
+  const deskList = $("deskListBtn");
+  const deskAddBtn = $("deskAddBtn");
+  const paneMore = $("paneMore");
+
+  if (deskDue) deskDue.style.display = isToday ? "none" : "";
+  if (deskList) deskList.style.display = "";
+  if (deskAddBtn) deskAddBtn.style.display = isToday ? "none" : "";
+  if (paneMore) paneMore.style.display = isToday ? "none" : "";
+
+  if (deskList) {
+    if (isToday) {
+      deskList.classList.add("split");
+      deskList.innerHTML = '<svg class="ico sm"><use href="#i-inbox"></use></svg><svg class="ico sm"><use href="#i-chevron-down"></use></svg>';
+    } else if (deskList.classList.contains("split")) {
+      deskList.classList.remove("split");
+      deskList.innerHTML = '<svg class="ico sm"><use href="#i-chevron-down"></use></svg>';
+    }
+  }
+
+  const compList = $("compListBtn");
+  const compDue = $("compDueBtn");
+  if (compDue) compDue.style.display = isToday ? "none" : "";
+  if (compList) compList.style.display = "";
+
+  updateDueIndicators();
+}
+
+function openInboxDuePicker(anchorEl, nativeInputEl) {
+  const t = new Date();
+  const today = iso(t);
+  const tomorrow = iso(new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1));
+  const plus7 = iso(new Date(t.getFullYear(), t.getMonth(), t.getDate() + 7));
+
+  const items = [
+    { label: "Сегодня", value: today, active: state.composer.dueDate === today, onSelect: () => setComposerDue(today) },
+    { label: "Завтра", value: tomorrow, active: state.composer.dueDate === tomorrow, onSelect: () => setComposerDue(tomorrow) },
+    { label: "Через 7 дней", value: plus7, active: state.composer.dueDate === plus7, onSelect: () => setComposerDue(plus7) },
+    "sep",
+    { label: "Без даты", value: null, active: !state.composer.dueDate, onSelect: () => setComposerDue(null) },
+    { label: "Выбрать дату…", value: "pick", onSelect: () => nativeInputEl?.click?.() },
+  ];
+  openPopover(anchorEl, items, { title: "Дата", width: 220 });
 }
 
 function setActive(kind, id) {
@@ -1590,15 +1687,28 @@ function _syncTaskRow(li, t) {
     p.flag.textContent = "";
   }
 
-  // meta (mobile mostly)
-  p.meta.innerHTML = "";
-  const list = state.lists.find((l) => l.id === t.listId);
-  if (list && !trashMode) {
+// meta (mobile mostly)
+p.meta.innerHTML = "";
+const list = state.lists.find((l) => l.id === t.listId);
+if (!trashMode) {
+  if (state.activeKind === "smart" && state.activeId === "today") {
+    // Reference: show "Сегодня Входящие" as two chips (no emoji)
+    const a = document.createElement("span");
+    a.className = "m-due due-today";
+    a.textContent = "Сегодня";
+    const b = document.createElement("span");
+    b.className = "m-list";
+    b.textContent = (list?.title || "Входящие");
+    p.meta.appendChild(a);
+    p.meta.appendChild(b);
+  } else if (list) {
     const s = document.createElement("span");
     s.textContent = `${list.emoji || "📌"} ${list.title}`;
     p.meta.appendChild(s);
   }
-  (t.tags || []).slice(0, 3).forEach((tag) => {
+}
+// tags
+(t.tags || []).slice(0, 3).forEach((tag) => {
     const c = document.createElement("span");
     c.className = "chipTag";
     c.textContent = "#" + tag;
@@ -1870,7 +1980,14 @@ function render() {
   if (completedHead) completedHead.hidden = false;
   done.hidden = false;
 
-  if (state.activeKind === 'list') {
+  if (state.activeKind === 'smart' && state.activeId === 'today') {
+    // TickTick-like Today: no group header, just tasks list
+    const ul = document.createElement('ul');
+    ul.className = 'tasks';
+    ul.dataset.section = '';
+    state.tasks.forEach((t) => ul.appendChild(taskRow(t)));
+    groups.appendChild(ul);
+  } else if (state.activeKind === 'list') {
     renderListWithSections(groups);
   } else {
     groupTasks(state.tasks).forEach((g) => {
@@ -2188,8 +2305,7 @@ async function addTask() {
   if (!raw) return;
   await addTaskFromRaw(raw);
   $("compInput").value = "";
-  state.composer.dueDate = null;
-  $("compDueDate").value = "";
+  setComposerDue(null);
   state.composer.priority = 0;
   $("compFlagBtn").style.opacity = "0.75";
 }
@@ -3292,8 +3408,11 @@ on($("taskForm"), "submit", async (e) => {
 });
 
 // composer actions
-on($("compDueBtn"), "click", () => $("compDueDate").click());
-on($("compDueDate"), "change", () => state.composer.dueDate = $("compDueDate").value || null);
+on($("compDueBtn"), "click", (e) => {
+  if (isInboxView()) { e.preventDefault(); openInboxDuePicker($("compDueBtn"), $("compDueDate")); return; }
+  $("compDueDate").click();
+});
+on($("compDueDate"), "change", () => setComposerDue($("compDueDate").value || null));
 on($("compFlagBtn"), "click", () => { state.composer.priority = (state.composer.priority + 1) % 4; $("compFlagBtn").style.opacity = state.composer.priority ? "1" : "0.75"; });
 $("compFlagBtn").style.opacity = "0.75";
 
@@ -3302,10 +3421,11 @@ on($("compInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault
 
 on($("deskAddBtn"), "click", addTaskDesktop);
 on($("deskAddInput"), "keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addTaskDesktop(); } });
-on($("deskDueBtn"), "click", () => $("deskDueDate")?.click?.());
-on($("deskDueDate"), "change", () => {
-  state.composer.dueDate = $("deskDueDate").value || null;
+on($("deskDueBtn"), "click", (e) => {
+  if (isInboxView()) { e.preventDefault(); openInboxDuePicker($("deskDueBtn"), $("deskDueDate")); return; }
+  $("deskDueDate")?.click?.();
 });
+on($("deskDueDate"), "change", () => setComposerDue($("deskDueDate").value || null));
 on($("deskListBtn"), "click", () => $("compListBtn")?.click?.());
 on($("paneAdd"), "click", () => $("deskAddInput")?.focus());
 on($("newSectionBtn"), "click", async () => {
