@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v27-today-composer-done-anim");
+console.log("ClockTime build v28-done-dynamic-spring-flip");
 
 const settings = (() => {
   const defaults = {
@@ -357,6 +357,8 @@ const state = {
   folderCollapsed: new Set(_collapse.folders || []),
   sectionCollapsed: new Set(_collapse.sections || []),
   doneCollapsed: true,
+  // expand completed block when completing a task in Today
+  doneJustExpanded: false,
   // Today inline addbar open/close
   todayAddOpen: false,
   openSwipeId: null,
@@ -742,8 +744,21 @@ function syncTodayAddbar(){
 
 function setTodayAddOpen(open, { focus = false } = {}){
   if (!isTodayView()) return;
+  const wasOpen = !!state.todayAddOpen;
   state.todayAddOpen = !!open;
   syncTodayAddbar();
+
+  // Spring-like open animation (TickTick-ish)
+  const dab = $("deskAddbar");
+  if (dab && !wasOpen && open && !_prefersReducedMotion()) {
+    dab.classList.remove('today-opening');
+    // retrigger
+    void dab.offsetWidth;
+    dab.classList.add('today-opening');
+    clearTimeout(dab._springT);
+    dab._springT = setTimeout(() => dab.classList.remove('today-opening'), 520);
+  }
+
   if (focus) {
     requestAnimationFrame(() => {
       const input = $("deskAddInput");
@@ -754,6 +769,7 @@ function setTodayAddOpen(open, { focus = false } = {}){
     });
   }
 }
+
 
 function syncCompletedBlock({ animate = false } = {}){
   const wrap = $("completedWrap");
@@ -767,7 +783,6 @@ function syncCompletedBlock({ animate = false } = {}){
   wrap.hidden = !has;
 
   $("completedCount").textContent = String(state.done.length);
-  // Today uses rotation animation on a single glyph
   if (isTodayView()) $("completedChevron").textContent = "▾";
   else $("completedChevron").textContent = state.doneCollapsed ? "▸" : "▾";
   wrap.classList.toggle('collapsed', !!state.doneCollapsed);
@@ -775,30 +790,51 @@ function syncCompletedBlock({ animate = false } = {}){
 
   if (!has) return;
 
-  // Smooth expand/collapse only for Today (TickTick-like)
+  // Non-Today behaves like classic collapsed list (no animated body)
   if (!isTodayView()) {
     body.style.maxHeight = '';
-    body.style.opacity = '';
-    body.style.transform = '';
     return;
   }
 
-  const target = state.doneCollapsed ? 0 : ul.scrollHeight;
+  // Bind once: after expanding, release max-height to allow unlimited growth (no clipping)
+  if (!body._dynBound) {
+    body._dynBound = true;
+    body.addEventListener('transitionend', (e) => {
+      if (e.propertyName !== 'max-height') return;
+      // If still open, remove cap
+      if (isTodayView() && !state.doneCollapsed) {
+        body.style.maxHeight = 'none';
+      }
+    });
+  }
+
   if (!animate) {
-    body.style.maxHeight = `${target}px`;
+    body.style.maxHeight = state.doneCollapsed ? '0px' : 'none';
     return;
   }
 
-  // Animate between current height and target
-  const current = ul.scrollHeight;
+  // Smooth expand/collapse with dynamic height and no clipping
+  const targetH = ul.scrollHeight;
+
   if (!state.doneCollapsed) {
+    // expanding: from 0 -> scrollHeight -> none (on transitionend)
     body.style.maxHeight = '0px';
-    requestAnimationFrame(() => { body.style.maxHeight = `${current}px`; });
+    // force
+    body.offsetHeight;
+    requestAnimationFrame(() => {
+      body.style.maxHeight = targetH + 'px';
+    });
   } else {
-    body.style.maxHeight = `${current}px`;
-    requestAnimationFrame(() => { body.style.maxHeight = '0px'; });
+    // collapsing: from current height (even if 'none') -> 0
+    const cur = (body.style.maxHeight === 'none' || !body.style.maxHeight) ? targetH : parseFloat(body.style.maxHeight) || targetH;
+    body.style.maxHeight = cur + 'px';
+    body.offsetHeight;
+    requestAnimationFrame(() => {
+      body.style.maxHeight = '0px';
+    });
   }
 }
+
 
 function openInboxDuePicker(anchorEl, nativeInputEl) {
   const t = new Date();
@@ -1363,14 +1399,20 @@ function _prefersReducedMotion() {
   return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+function _taskBucketForEl(el){
+  if (!el) return 'other';
+  if (el.closest && el.closest('#completedTasks')) return 'done';
+  if (el.closest && el.closest('#groups')) return 'active';
+  return 'other';
+}
+
 function _captureTaskRects() {
   const m = new Map();
   document.querySelectorAll('.task').forEach((el) => {
     const id = el.dataset.id;
     if (!id) return;
-    // Skip the actively dragged item to avoid fighting the browser drag preview
     if (el.classList.contains('dragging')) return;
-    m.set(id, el.getBoundingClientRect());
+    m.set(id, { rect: el.getBoundingClientRect(), bucket: _taskBucketForEl(el) });
   });
   return m;
 }
@@ -1383,22 +1425,42 @@ function _playFlip(before) {
     const id = el.dataset.id;
     if (!id) return;
     if (el.classList.contains('dragging')) return;
-    after.set(id, el.getBoundingClientRect());
+    after.set(id, { rect: el.getBoundingClientRect(), bucket: _taskBucketForEl(el) });
   });
 
+  const norm = (v) => (v && v.rect) ? v : { rect: v, bucket: 'other' };
+
   // moved elements
-  for (const [id, first] of before.entries()) {
-    const last = after.get(id);
-    if (!last) continue;
-    const dx = first.left - last.left;
-    const dy = first.top - last.top;
+  for (const [id, firstRaw] of before.entries()) {
+    const first = norm(firstRaw);
+    const lastRaw = after.get(id);
+    if (!lastRaw) continue;
+    const last = norm(lastRaw);
+
+    const dx = first.rect.left - last.rect.left;
+    const dy = first.rect.top - last.rect.top;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+
     const el = document.querySelector(`.task[data-id="${CSS.escape(id)}"]`);
     if (!el) continue;
-    el.animate(
-      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0,0)' }],
-      { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }
-    );
+
+    const cross = first.bucket !== last.bucket && ((first.bucket === 'active' && last.bucket === 'done') || (first.bucket === 'done' && last.bucket === 'active'));
+
+    if (cross) {
+      el.animate(
+        [
+          { transform: `translate(${dx}px, ${dy}px) scale(.98)`, opacity: 0.85 },
+          { transform: 'translate(0,0) scale(1.01)', opacity: 1, offset: 0.72 },
+          { transform: 'translate(0,0) scale(1)', opacity: 1 }
+        ],
+        { duration: 240, easing: 'cubic-bezier(.18,.9,.2,1)' }
+      );
+    } else {
+      el.animate(
+        [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0,0)' }],
+        { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }
+      );
+    }
   }
 
   // entering elements
@@ -1727,6 +1789,13 @@ function _createTaskRow() {
       const updated = await apiPatchTask(t.id, { completed: !t.completed });
       closeOpenSwipe();
       _upsertTaskLocal(updated);
+
+      // TickTick-like: when completing in Today, auto-expand the Completed block so the move is animated
+      if (isTodayView() && updated.completed && state.doneCollapsed) {
+        state.doneCollapsed = false;
+        state.doneJustExpanded = true;
+      }
+
       render();
       await refreshCounts();
     } catch (e) {
@@ -2112,9 +2181,11 @@ function render() {
 
   // Completed block
   if (state.activeKind === 'smart' && state.activeId === 'today') {
-    // Keep DOM for smooth expand/collapse
+    // Keep DOM for smooth expand/collapse + animate auto-expand when completing
     state.done.forEach((t) => done.appendChild(taskRow(t)));
-    syncCompletedBlock({ animate: false });
+    const anim = !!state.doneJustExpanded;
+    syncCompletedBlock({ animate: anim });
+    state.doneJustExpanded = false;
   } else {
     $("completedCount").textContent = String(state.done.length);
     $("completedChevron").textContent = state.doneCollapsed ? "▸" : "▾";
@@ -3485,6 +3556,12 @@ on($("btnTaskToggle"), "click", async () => {
 
   closeSheet("taskBackdrop", "taskSheet");
   _upsertTaskLocal(updated);
+
+  if (isTodayView() && updated?.completed && state.doneCollapsed) {
+    state.doneCollapsed = false;
+    state.doneJustExpanded = true;
+  }
+
   render();
   await refreshCounts();
 });
@@ -3803,7 +3880,19 @@ if (state.view === 'tasks' && state.module === 'tasks') {
     if (e.key === ' ' && state.selectedTaskId) {
       e.preventDefault();
       const t = getTaskById(state.selectedTaskId);
-      if (t) apiPatchTask(t.id, { completed: !t.completed }).then(() => loadTasks()).catch(() => {});
+      if (t) {
+        apiPatchTask(t.id, { completed: !t.completed })
+          .then((updated) => {
+            _upsertTaskLocal(updated);
+            if (isTodayView() && updated?.completed && state.doneCollapsed) {
+              state.doneCollapsed = false;
+              state.doneJustExpanded = true;
+            }
+            render();
+            refreshCounts().catch(() => {});
+          })
+          .catch(() => {});
+      }
       return;
     }
   }
