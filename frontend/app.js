@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v29-pro-schedule-pin");
+console.log("ClockTime build v30-v2-subtasks-reminders");
 
 const settings = (() => {
   const defaults = {
@@ -480,13 +480,67 @@ const bucket = (s) => {
 const parseQuick = (raw) => {
   const tags = [], kept = [];
   let pr = null;
+  let dueDate = null;
+  let dueTime = null;
+  let reminderMinutes = null;
+  let repeatRule = null;
+
+  const tokDate = (p) => {
+    const x = String(p || '').toLowerCase();
+    const now = new Date();
+    if (x === 'сегодня' || x === 'today') return iso(now);
+    if (x === 'завтра' || x === 'tomorrow') return iso(addDays(now, 1));
+    if (x === 'послезавтра') return iso(addDays(now, 2));
+    if (/^\d{4}-\d{2}-\d{2}$/.test(x)) return x;
+    const md = x.match(/^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?$/);
+    if (md) {
+      let dd = Number(md[1]);
+      let mm = Number(md[2]);
+      let yy = md[3] ? Number(md[3]) : now.getFullYear();
+      if (yy < 100) yy += 2000;
+      const d = new Date(yy, mm - 1, dd);
+      if (d && d.getFullYear() === yy && d.getMonth() === mm - 1 && d.getDate() === dd) return iso(d);
+    }
+    const wmap = { пн:1, вт:2, ср:3, чт:4, пт:5, сб:6, вс:0, mon:1, tue:2, wed:3, thu:4, fri:5, sat:6, sun:0 };
+    if (Object.prototype.hasOwnProperty.call(wmap, x)) {
+      const target = wmap[x];
+      const d = new Date(now);
+      const delta = (target - d.getDay() + 7) % 7 || 7;
+      return iso(addDays(now, delta));
+    }
+    return null;
+  };
+
   for (const p of raw.trim().split(/\s+/)) {
+    if (!p) continue;
     if (/^#\S+/.test(p)) { tags.push(p.replace(/^#/, "")); continue; }
-    const m = p.match(/^!([1-3])$/);
-    if (m) { pr = parseInt(m[1], 10); continue; }
+    const pri = p.match(/^!([1-3])$/);
+    if (pri) { pr = parseInt(pri[1], 10); continue; }
+    const tm = p.match(/^(?:в)?(\d{1,2}:\d{2})$/i);
+    if (tm && /^\d{1,2}:\d{2}$/.test(tm[1])) {
+      const [h,m] = tm[1].split(':').map(Number);
+      if (h >= 0 && h < 24 && m >= 0 && m < 60) { dueTime = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`; continue; }
+    }
+    const rem = p.match(/^@?(\d+)(m|min|h|d)$/i);
+    if (rem) {
+      const n = Number(rem[1]);
+      const u = rem[2].toLowerCase();
+      reminderMinutes = u.startsWith('d') ? n * 1440 : u.startsWith('h') ? n * 60 : n;
+      continue;
+    }
+    const rpt = String(p).toLowerCase();
+    if (['daily','ежедневно'].includes(rpt)) { repeatRule = 'daily'; continue; }
+    if (['weekly','еженедельно'].includes(rpt)) { repeatRule = 'weekly'; continue; }
+    if (['monthly','ежемесячно'].includes(rpt)) { repeatRule = 'monthly'; continue; }
+    if (['yearly','ежегодно'].includes(rpt)) { repeatRule = 'yearly'; continue; }
+    if (['weekdays','будни'].includes(rpt)) { repeatRule = 'weekdays'; continue; }
+
+    const d = tokDate(p);
+    if (d) { dueDate = d; continue; }
+
     kept.push(p);
   }
-  return { title: kept.join(" ").trim(), tags, priority: pr };
+  return { title: kept.join(" ").trim(), tags, priority: pr, dueDate, dueTime, reminderMinutes, repeatRule };
 };
 
 const parseTagsInput = (s) => {
@@ -498,6 +552,98 @@ const parseTagsInput = (s) => {
   }
   return [...new Set(tags.filter(Boolean))];
 };
+
+const REM_FIRED_KEY = 'tt.reminders.fired.v1';
+let _reminderPoll = null;
+
+function _loadReminderCache() {
+  try { return JSON.parse(localStorage.getItem(REM_FIRED_KEY) || '{}') || {}; } catch { return {}; }
+}
+function _saveReminderCache(v) {
+  try { localStorage.setItem(REM_FIRED_KEY, JSON.stringify(v)); } catch {}
+}
+function _pruneReminderCache(cache) {
+  const now = Date.now();
+  for (const [k, ts] of Object.entries(cache)) {
+    if (!Number.isFinite(Number(ts)) || (now - Number(ts)) > 1000 * 60 * 60 * 24 * 14) delete cache[k];
+  }
+  return cache;
+}
+function _taskDueDateTimeMs(t) {
+  if (!t?.dueDate) return null;
+  const time = t.dueTime || '09:00'; // all-day reminder defaults to morning
+  const dt = new Date(`${t.dueDate}T${time}:00`);
+  const ms = dt.getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+function _taskReminderFireMs(t) {
+  const dueMs = _taskDueDateTimeMs(t);
+  if (dueMs == null) return null;
+  const mins = (t.reminderMinutes === null || t.reminderMinutes === undefined) ? null : Number(t.reminderMinutes);
+  if (mins === null || !Number.isFinite(mins)) return null;
+  return dueMs - mins * 60 * 1000;
+}
+async function ensureNotificationPermission({ silent = false } = {}) {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  if (silent) return false;
+  try {
+    const r = await Notification.requestPermission();
+    return r === 'granted';
+  } catch {
+    return false;
+  }
+}
+function maybeTriggerLocalReminders(tasks = []) {
+  if (!settings.reminders) return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const now = Date.now();
+  const lookBehind = 1000 * 90; // tolerate sleep/tab wakeup drift
+  const lookAhead = 1000 * 45;
+  const cache = _pruneReminderCache(_loadReminderCache());
+  let dirty = false;
+  for (const t of tasks) {
+    if (!t || t.completed || t.trashed) continue;
+    const fireMs = _taskReminderFireMs(t);
+    if (fireMs == null) continue;
+    if (fireMs < (now - lookBehind) || fireMs > (now + lookAhead)) continue;
+    const key = `${t.id}:${fireMs}`;
+    if (cache[key]) continue;
+    const title = t.title || 'Задача';
+    const body = [fmtDueLong(t.dueDate, t.dueTime), t.repeatRule ? `↻ ${repeatRuleLabel(t.repeatRule)}` : null].filter(Boolean).join(' · ');
+    try {
+      const n = new Notification(title, { body: body || 'Напоминание ClockTime', tag: `task-${t.id}` });
+      n.onclick = () => {
+        try { window.focus(); } catch {}
+        const task = getTaskById(t.id);
+        if (task) openTask(task);
+      };
+      cache[key] = now;
+      dirty = true;
+    } catch {}
+  }
+  if (dirty) _saveReminderCache(cache);
+}
+async function reminderPollTick() {
+  try {
+    if (!settings.reminders || document.visibilityState === 'hidden') return;
+    if (!(await ensureNotificationPermission({ silent: true }))) return;
+    const today = iso(addDays(new Date(), -1));
+    const to = iso(addDays(new Date(), 3));
+    const rows = await apiGetTasks({ filter: 'active', sort: 'due', due_from: today, due_to: to });
+    maybeTriggerLocalReminders(rows || []);
+  } catch {}
+}
+function startReminderEngine() {
+  if (_reminderPoll) clearInterval(_reminderPoll);
+  _reminderPoll = setInterval(reminderPollTick, 30 * 1000);
+  reminderPollTick();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') reminderPollTick();
+});
 
 function openSheet(b, s) { $(b).hidden = false; $(s).hidden = false; }
 function closeSheet(b, s) { $(b).hidden = true; $(s).hidden = true; }
@@ -1903,6 +2049,14 @@ if (!trashMode && t.reminderMinutes !== null && t.reminderMinutes !== undefined)
   c.textContent = '🔔 ' + reminderLabel(t.reminderMinutes);
   p.meta.appendChild(c);
 }
+if (!trashMode && Array.isArray(t.subtasks) && t.subtasks.length) {
+  const total = t.subtasks.length;
+  const doneCount = t.subtasks.filter((x) => x && x.completed).length;
+  const c = document.createElement('span');
+  c.className = 'chipMeta';
+  c.textContent = `☑ ${doneCount}/${total}`;
+  p.meta.appendChild(c);
+}
 const list = state.lists.find((l) => l.id === t.listId);
 if (!trashMode) {
   if (state.activeKind === "smart" && state.activeId === "today") {
@@ -2282,6 +2436,7 @@ async function loadTasks() {
     state.done = [];
     state.sections = [];
     render();
+    maybeTriggerLocalReminders(state.tasks);
     return;
   }
   if (state.activeKind === 'smart' && state.activeId === 'trash') {
@@ -2291,6 +2446,7 @@ async function loadTasks() {
     state.done = [];
     state.sections = [];
     render();
+    maybeTriggerLocalReminders(state.tasks);
     return;
   }
   if (state.activeKind === "tag") {
@@ -2326,6 +2482,7 @@ async function loadTasks() {
     state.sections = [];
   }
   render();
+  maybeTriggerLocalReminders([...(state.tasks || []), ...(state.done || [])]);
 }
 
 async function refreshCounts() {
@@ -2492,6 +2649,7 @@ function renderTaskEditor() {
 
   $("teTitle").value = t.title || "";
   $("teNotes").value = t.notes || "";
+  renderTaskSubtasks(t);
   $("teDueText").textContent = fmtDueLong(t.dueDate, t.dueTime);
   $("teDueDate").value = t.dueDate || "";
   $("teDueTime") && ($("teDueTime").value = t.dueTime || "");
@@ -2520,12 +2678,96 @@ function renderTaskEditor() {
   $("teTags")?.classList.toggle("active", (t.tags || []).length > 0);
 }
 
+function renderTaskSubtasks(t) {
+  const box = $("teSubtasksBox");
+  const listEl = $("teSubtasks");
+  const statsEl = $("teSubtasksStats");
+  if (!box || !listEl) return;
+  const items = Array.isArray(t?.subtasks) ? t.subtasks : [];
+  const doneCount = items.filter((x) => x && x.completed).length;
+  box.hidden = false;
+  if (statsEl) statsEl.textContent = `${doneCount}/${items.length}`;
+  listEl.innerHTML = "";
+  if (!items.length) {
+    const em = document.createElement('div');
+    em.className = 'te-sub-empty';
+    em.textContent = 'Нет подзадач';
+    listEl.appendChild(em);
+    return;
+  }
+  for (const st of items) {
+    const row = document.createElement('div');
+    row.className = 'te-sub-item' + (st.completed ? ' done' : '');
+    row.dataset.sid = st.id;
+
+    const cb = document.createElement('button');
+    cb.type = 'button';
+    cb.className = 'te-sub-check';
+    cb.title = st.completed ? 'Вернуть' : 'Выполнить';
+
+    const txt = document.createElement('div');
+    txt.className = 'te-sub-text';
+    txt.textContent = st.title || '';
+    txt.title = st.title || '';
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'te-sub-del';
+    del.title = 'Удалить';
+    del.textContent = '×';
+
+    cb.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await patchSelectedSubtasks((arr) => arr.map((x) => x.id === st.id ? { ...x, completed: !x.completed } : x));
+    });
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await patchSelectedSubtasks((arr) => arr.filter((x) => x.id !== st.id));
+    });
+    txt.addEventListener('dblclick', async () => {
+      const nv = prompt('Изменить подзадачу', st.title || '');
+      if (nv === null) return;
+      const title = nv.trim();
+      if (!title) return;
+      await patchSelectedSubtasks((arr) => arr.map((x) => x.id === st.id ? { ...x, title } : x));
+    });
+
+    row.appendChild(cb);
+    row.appendChild(txt);
+    row.appendChild(del);
+    listEl.appendChild(row);
+  }
+}
+
+async function patchSelectedSubtasks(mutator) {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const base = Array.isArray(t.subtasks) ? t.subtasks.map((x) => ({ ...x })) : [];
+  const next = typeof mutator === 'function' ? mutator(base) : base;
+  const clean = (Array.isArray(next) ? next : []).map((x, idx) => ({
+    id: String(x.id || `sub_${Date.now()}_${idx}_${Math.random().toString(16).slice(2,6)}`),
+    title: String(x.title || '').trim(),
+    completed: !!x.completed,
+  })).filter((x) => x.title).slice(0, 200);
+  await patchSelectedTask({ subtasks: clean }, { reload: false });
+}
+
+async function addSelectedSubtaskFromInput() {
+  const input = $("teSubtaskInput");
+  if (!input) return;
+  const title = (input.value || '').trim();
+  if (!title) return;
+  input.value = '';
+  await patchSelectedSubtasks((arr) => [...arr, { id: `sub_${Date.now()}`, title, completed: false }]);
+  input.focus();
+}
+
 // Composer
 async function addTaskFromRaw(raw, explicitListId = null, explicitDue = null, explicitPriority = null) {
   const p = parseQuick(raw);
   if (!p.title) return;
 
-  let due = explicitDue ?? state.composer.dueDate;
+  let due = p.dueDate ?? explicitDue ?? state.composer.dueDate;
   if (state.activeKind === "smart" && state.activeId === "today" && !due) due = iso(new Date());
 
   const inboxId = state.system.inboxId;
@@ -2535,7 +2777,23 @@ async function addTaskFromRaw(raw, explicitListId = null, explicitDue = null, ex
   // If user clicked "＋" on a section header, we add into that section.
   const sectionId = (state.activeKind === "list") ? (state.composer.sectionId || null) : null;
 
-  const created = await apiCreateTask({ title: p.title, listId, sectionId, dueDate: due || null, tags: p.tags, priority, notes: null });
+  if (p.reminderMinutes !== null && p.reminderMinutes !== undefined) {
+    if (!settings.reminders) { settings.reminders = true; save(); }
+    await ensureNotificationPermission();
+  }
+
+  const created = await apiCreateTask({
+    title: p.title,
+    listId,
+    sectionId,
+    dueDate: due || null,
+    dueTime: p.dueTime || null,
+    reminderMinutes: p.reminderMinutes ?? null,
+    repeatRule: p.repeatRule || null,
+    tags: p.tags,
+    priority,
+    notes: null,
+  });
   state.justCreatedId = created?.id || null;
   clearTimeout(state._justCreatedT);
   state._justCreatedT = setTimeout(() => { state.justCreatedId = null; }, 600);
@@ -2582,6 +2840,48 @@ async function ensureCalendarTasksRange(due_from, due_to, key) {
   if (state.calendarRangeKey === key) return;
   state.calendarTasks = await apiGetTasks({ filter: 'active', sort: 'due', due_from, due_to });
   state.calendarRangeKey = key;
+}
+
+function bindCalendarEventDrag(ev, t) {
+  if (!ev || !t?.id) return;
+  ev.draggable = true;
+  ev.addEventListener('dragstart', (e) => {
+    ev.classList.add('dragging');
+    state.draggingTask = { id: t.id, fromSection: t.sectionId || null };
+    try { e.dataTransfer.setData('text/plain', t.id); } catch {}
+    e.dataTransfer && (e.dataTransfer.effectAllowed = 'move');
+  });
+  ev.addEventListener('dragend', () => { ev.classList.remove('dragging'); state.draggingTask = null; });
+}
+
+function bindCalendarDropTarget(el, dayIso) {
+  if (!el || !dayIso) return;
+  el.classList.add('drop-target');
+  el.addEventListener('dragover', (e) => {
+    const has = !!(state.draggingTask?.id || e.dataTransfer?.types?.includes?.('text/plain'));
+    if (!has) return;
+    e.preventDefault();
+    el.classList.add('drop-hover');
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-hover'));
+  el.addEventListener('drop', async (e) => {
+    const tid = state.draggingTask?.id || (e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
+    if (!tid) return;
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.remove('drop-hover');
+    try {
+      const updated = await apiPatchTask(tid, { dueDate: dayIso });
+      _upsertTaskLocal(updated);
+      const i = state.calendarTasks.findIndex((x) => x.id === tid);
+      if (i >= 0) state.calendarTasks[i] = { ...state.calendarTasks[i], ...updated };
+      renderCalendar();
+      render();
+      renderTaskEditor();
+      refreshCounts().catch(() => {});
+    } catch (_) {}
+  });
 }
 
 
@@ -2658,6 +2958,7 @@ async function renderCalendar() {
         ev.style.borderLeftColor = col;
         ev.textContent = (t.dueTime ? `${fmtTime(t.dueTime)} ` : '') + t.title;
         ev.addEventListener('click', (e)=>{ e.stopPropagation(); openTask(t); });
+        bindCalendarEventDrag(ev, t);
         events.appendChild(ev);
       }
       if (tasks.length > 4) {
@@ -2668,6 +2969,7 @@ async function renderCalendar() {
       }
 
       cell.appendChild(events);
+      bindCalendarDropTarget(cell, dayIso);
       cell.addEventListener('click', ()=>{
         state.calendarView = 'day';
         state.calendarCursor = new Date(day);
@@ -2721,9 +3023,11 @@ async function renderCalendar() {
         ev.style.borderLeftColor=colorForList(t.listId||state.system.inboxId||'inbox');
         ev.textContent=(t.dueTime ? `${fmtTime(t.dueTime)} ` : '') + t.title;
         ev.addEventListener('click',(e)=>{e.stopPropagation();openTask(t);});
+        bindCalendarEventDrag(ev, t);
         events.appendChild(ev);
       }
       cell.appendChild(events);
+      bindCalendarDropTarget(cell, dayIso);
       cell.addEventListener('click', ()=>{ state.calendarView='day'; state.calendarCursor=new Date(day); state.calendarRangeKey=''; renderCalendar(); });
       grid.appendChild(cell);
     }
@@ -2753,9 +3057,11 @@ async function renderCalendar() {
       row.style.padding='10px 12px';
       row.textContent=(t.dueTime ? `${fmtTime(t.dueTime)} ` : "") + t.title;
       row.addEventListener('click', ()=>openTask(t));
+      bindCalendarEventDrag(row, t);
       wrap.appendChild(row);
     }
   }
+  bindCalendarDropTarget(wrap, from);
   grid.appendChild(wrap);
 }
 
@@ -3200,7 +3506,13 @@ function setSettingsTab(label) {
       <div class="hint-card">Сейчас настройка сохраняется и влияет на будущие функции напоминаний.</div>
     `;
     setTimeout(() => {
-      $("tgRem")?.addEventListener('click', () => { settings.reminders = !settings.reminders; save(); setSettingsTab('Уведомления'); });
+      $("tgRem")?.addEventListener('click', async () => {
+        settings.reminders = !settings.reminders;
+        save();
+        if (settings.reminders) await ensureNotificationPermission();
+        setSettingsTab('Уведомления');
+        reminderPollTick();
+      });
     }, 0);
     return;
   }
@@ -3590,8 +3902,16 @@ on($("teReminder"), "click", async () => {
     active: (t.reminderMinutes ?? null) === v,
     onSelect: async (val) => {
       const patch = { reminderMinutes: val };
+      if (val !== null && val !== undefined) {
+        if (!settings.reminders) {
+          settings.reminders = true;
+          save();
+        }
+        await ensureNotificationPermission();
+      }
       if (val !== null && val !== undefined && !t.dueDate) patch.dueDate = iso(new Date());
       await patchSelectedTask(patch, { reload: true });
+      reminderPollTick();
     },
   }));
   openPopover($("teReminder"), items, { title: 'Уведомление', width: 260 });
@@ -3637,6 +3957,13 @@ on($("teTags"), "click", async () => {
   const tags = parseTagsInput(raw);
   await patchSelectedTask({ tags }, { reload: false });
 });
+on($("teSubAdd"), "click", () => { addSelectedSubtaskFromInput().catch(() => {}); });
+on($("teSubtaskInput"), "keydown", (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addSelectedSubtaskFromInput().catch(() => {});
+  }
+});
 on($("teMore"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
   if (!t) return;
@@ -3647,6 +3974,15 @@ on($("teMore"), "click", async () => {
       icon: '📌',
       onSelect: async () => {
         await patchSelectedTask({ pinned: !t.pinned }, { reload: true });
+      }
+    },
+    {
+      label: "Добавить подзадачу",
+      value: "subtask",
+      icon: '☑',
+      onSelect: async () => {
+        const el = $("teSubtaskInput");
+        el?.focus?.();
       }
     },
     {
@@ -4202,6 +4538,7 @@ async function startApp() {
     await refreshCounts();
     setActive("smart", "all");
     applyLayout();
+    startReminderEngine();
   } catch (e) {
     _started = false;
 alert("Ошибка: " + (e.message || e));

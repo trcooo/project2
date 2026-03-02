@@ -208,6 +208,7 @@ tasks = Table(
     Column("priority", Integer, nullable=False, server_default="0"),
     Column("notes", Text, nullable=True),
     Column("tags_json", Text, nullable=False, server_default="[]"),
+    Column("subtasks_json", Text, nullable=False, server_default="[]"),
     Column("trashed", Boolean, nullable=False, server_default="false"),
     Column("trashed_at", BigInteger, nullable=True),
 )
@@ -305,6 +306,56 @@ def dumps_tags(tags: List[str]) -> str:
             seen.add(t); out.append(t)
     return json.dumps(out, ensure_ascii=False)
 
+
+def parse_subtasks_json(s: str) -> List[dict]:
+    try:
+        v = json.loads(s or "[]")
+    except Exception:
+        return []
+    if not isinstance(v, list):
+        return []
+    out: List[dict] = []
+    for it in v:
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()
+        if not title:
+            continue
+        sid = str(it.get("id") or gen_id())
+        out.append({"id": sid, "title": title[:240], "completed": bool(it.get("completed"))})
+    return out
+
+
+def normalize_subtasks_payload(items: Optional[List[dict]]) -> List[dict]:
+    if not items:
+        return []
+    out: List[dict] = []
+    seen: set[str] = set()
+    for raw in items:
+        if raw is None:
+            continue
+        if hasattr(raw, "model_dump"):
+            d = raw.model_dump()
+        elif isinstance(raw, dict):
+            d = raw
+        else:
+            continue
+        title = str(d.get("title") or "").strip()
+        if not title:
+            continue
+        sid = str(d.get("id") or gen_id())
+        if sid in seen:
+            sid = gen_id()
+        seen.add(sid)
+        out.append({"id": sid, "title": title[:240], "completed": bool(d.get("completed"))})
+        if len(out) >= 200:
+            break
+    return out
+
+
+def dumps_subtasks(items: Optional[List[dict]]) -> str:
+    return json.dumps(normalize_subtasks_payload(items), ensure_ascii=False)
+
 def ensure_columns(table_name: str, required: dict[str, str]) -> None:
     insp = inspect(engine)
     cols = {c["name"] for c in insp.get_columns(table_name)} if insp.has_table(table_name) else set()
@@ -353,6 +404,7 @@ def init_db():
             "notes": "notes TEXT",
             "completed_at": "completed_at BIGINT",
             "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",
+            "subtasks_json": "subtasks_json TEXT NOT NULL DEFAULT '[]'",
             "trashed": "trashed BOOLEAN NOT NULL DEFAULT false",
             "trashed_at": "trashed_at BIGINT",
 
@@ -493,6 +545,11 @@ class SectionUpdate(BaseModel):
 class ReorderSimple(BaseModel):
     orderedIds: List[str]
 
+class SubtaskItem(BaseModel):
+    id: Optional[str] = None
+    title: str = Field(min_length=1, max_length=240)
+    completed: bool = False
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     listId: Optional[str] = Field(default=None)
@@ -505,6 +562,7 @@ class TaskCreate(BaseModel):
     tags: List[str] = Field(default_factory=list)
     priority: int = Field(default=0, ge=0, le=3)
     notes: Optional[str] = None
+    subtasks: List[SubtaskItem] = Field(default_factory=list)
 
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
@@ -519,6 +577,7 @@ class TaskUpdate(BaseModel):
     tags: Optional[List[str]] = None
     priority: Optional[int] = Field(default=None, ge=0, le=3)
     notes: Optional[Optional[str]] = None
+    subtasks: Optional[List[SubtaskItem]] = None
     trashed: Optional[bool] = None
 
 class ReorderPayload(BaseModel):
@@ -538,6 +597,7 @@ class TaskOut(BaseModel):
     tags: List[str] = Field(default_factory=list)
     priority: int = 0
     notes: Optional[str] = None
+    subtasks: List[SubtaskItem] = Field(default_factory=list)
     trashed: bool = False
     trashedAt: Optional[int] = None
 
@@ -558,6 +618,7 @@ def to_task_out(r):
         tags=parse_tags_json(r.get("tags_json") or "[]"),
         priority=int(r.get("priority") or 0),
         notes=r.get("notes"),
+        subtasks=parse_subtasks_json(r.get("subtasks_json") or "[]"),
         trashed=bool(r.get("trashed") or False),
         trashedAt=(int(r.get("trashed_at")) if r.get("trashed_at") is not None else None),
     )
@@ -997,7 +1058,8 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
             priority=int(payload.priority or 0),
             trashed=False, trashed_at=None,
             notes=(payload.notes.strip() if payload.notes else None),
-            tags_json=dumps_tags(payload.tags)
+            tags_json=dumps_tags(payload.tags),
+            subtasks_json=dumps_subtasks(payload.subtasks)
         ).returning(tasks)
         row = conn.execute(stmt).mappings().first()
     return to_task_out(row)
@@ -1054,6 +1116,8 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
     if payload.tags is not None: values["tags_json"]=dumps_tags(payload.tags)
     if payload.priority is not None: values["priority"]=int(payload.priority)
     if "notes" in fields_set: values["notes"]=payload.notes.strip() if payload.notes else None
+    if "subtasks" in fields_set:
+        values["subtasks_json"] = dumps_subtasks(payload.subtasks or [])
     if payload.trashed is not None:
         tr = bool(payload.trashed)
         values["trashed"] = tr

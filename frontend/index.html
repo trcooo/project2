@@ -262,6 +262,17 @@
 
             <div class="te-body">
               <input class="te-title" id="teTitle" type="text" placeholder="Название…" maxlength="200" />
+              <div class="te-subtasks" id="teSubtasksBox">
+                <div class="te-sub-head">
+                  <span>Подзадачи</span>
+                  <span class="te-sub-stats" id="teSubtasksStats">0/0</span>
+                </div>
+                <div class="te-sub-list" id="teSubtasks"></div>
+                <div class="te-sub-add">
+                  <input class="te-sub-input" id="teSubtaskInput" type="text" placeholder="+ Добавить подзадачу" maxlength="240" />
+                  <button class="te-sub-btn" id="teSubAdd" type="button">Добавить</button>
+                </div>
+              </div>
               <textarea class="te-notes" id="teNotes" placeholder="Заметки…" spellcheck="false"></textarea>
             </div>
 
