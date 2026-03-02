@@ -449,6 +449,17 @@ function reminderLabel(mins){
   return `За ${n} мин`;
 }
 
+function durationLabel(mins){
+  if (mins === null || mins === undefined || mins === '') return '';
+  const n = Number(mins);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n < 60) return `${n} мин`;
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  if (m === 0) return `${h} ч`;
+  return `${h} ч ${m} мин`;
+}
+
 const WEEKDAYS_RU = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
 
 function isoFromTs(ts){
@@ -493,63 +504,223 @@ const parseQuick = (raw) => {
   let dueTime = null;
   let reminderMinutes = null;
   let repeatRule = null;
+  let durationMinutes = null;
 
-  const tokDate = (p) => {
-    const x = String(p || '').toLowerCase();
-    const now = new Date();
-    if (x === 'сегодня' || x === 'today') return iso(now);
-    if (x === 'завтра' || x === 'tomorrow') return iso(addDays(now, 1));
-    if (x === 'послезавтра') return iso(addDays(now, 2));
-    if (/^\d{4}-\d{2}-\d{2}$/.test(x)) return x;
-    const md = x.match(/^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?$/);
-    if (md) {
-      let dd = Number(md[1]);
-      let mm = Number(md[2]);
-      let yy = md[3] ? Number(md[3]) : now.getFullYear();
-      if (yy < 100) yy += 2000;
-      const d = new Date(yy, mm - 1, dd);
-      if (d && d.getFullYear() === yy && d.getMonth() === mm - 1 && d.getDate() === dd) return iso(d);
+  const now = new Date();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const toIsoParts = (y, m, d) => {
+    const dt = new Date(y, m - 1, d);
+    if (dt.getFullYear() !== y || (dt.getMonth() + 1) !== m || dt.getDate() !== d) return null;
+    return `${y}-${pad2(m)}-${pad2(d)}`;
+  };
+  const monthMap = {
+    янв:1, января:1, january:1, jan:1,
+    фев:2, февраля:2, february:2, feb:2,
+    мар:3, марта:3, march:3, mar:3,
+    апр:4, апреля:4, april:4, apr:4,
+    май:5, мая:5, may:5,
+    июн:6, июня:6, june:6, jun:6,
+    июл:7, июля:7, july:7, jul:7,
+    авг:8, августа:8, august:8, aug:8,
+    сен:9, сент:9, сентября:9, september:9, sep:9, sept:9,
+    окт:10, октября:10, october:10, oct:10,
+    ноя:11, ноября:11, november:11, nov:11,
+    дек:12, декабря:12, december:12, dec:12,
+  };
+  const weekdayMap = {
+    вс:0, воскресенье:0, sunday:0, sun:0,
+    пн:1, понедельник:1, monday:1, mon:1,
+    вт:2, вторник:2, tuesday:2, tue:2, tues:2,
+    ср:3, среда:3, wednesday:3, wed:3,
+    чт:4, четверг:4, thursday:4, thu:4, thur:4, thurs:4,
+    пт:5, пятница:5, friday:5, fri:5,
+    сб:6, суббота:6, saturday:6, sat:6,
+  };
+
+  const parseTimeToken = (tok) => {
+    let x = String(tok || '').trim().toLowerCase();
+    if (!x) return null;
+    x = x.replace(/^в(?=\d)/, '');
+    x = x.replace(/[.,](\d{2})$/, ':$1');
+    let m = x.match(/^(\d{1,2}):(\d{2})(am|pm)?$/);
+    if (!m) m = x.match(/^(\d{1,2})(am|pm)$/);
+    if (!m && /^\d{4}$/.test(x)) m = [x, x.slice(0,2), x.slice(2,4), ''];
+    if (!m) return null;
+    let h = Number(m[1]);
+    let mm = Number(m[2] || 0);
+    const ap = (m[3] || '').toLowerCase();
+    if (ap) {
+      if (h === 12) h = 0;
+      if (ap === 'pm') h += 12;
     }
-    const wmap = { пн:1, вт:2, ср:3, чт:4, пт:5, сб:6, вс:0, mon:1, tue:2, wed:3, thu:4, fri:5, sat:6, sun:0 };
-    if (Object.prototype.hasOwnProperty.call(wmap, x)) {
-      const target = wmap[x];
-      const d = new Date(now);
-      const delta = (target - d.getDay() + 7) % 7 || 7;
-      return iso(addDays(now, delta));
-    }
+    if (h >= 0 && h < 24 && mm >= 0 && mm < 60) return `${pad2(h)}:${pad2(mm)}`;
     return null;
   };
 
-  for (const p of raw.trim().split(/\s+/)) {
+  const parseReminderToken = (tok) => {
+    const m = String(tok || '').trim().match(/^@?(\d+)(m|min|h|d)$/i);
+    if (!m) return null;
+    const n = Number(m[1]);
+    const u = m[2].toLowerCase();
+    if (!Number.isFinite(n) || n < 0) return null;
+    return u.startsWith('d') ? n * 1440 : u.startsWith('h') ? n * 60 : n;
+  };
+
+  const parseDurationToken = (tok) => {
+    let x = String(tok || '').trim().toLowerCase();
+    if (!x) return null;
+    x = x.replace(/^~+/, '').replace(/^dur:/, '').replace(/^duration:/, '').replace(/^длительность:/, '');
+    x = x.replace(',', '.');
+    let m = x.match(/^(\d+(?:\.\d+)?)ч(?:(\d{1,2})м(?:ин)?)?$/i);
+    if (m) {
+      const h = Number(m[1]);
+      const mm = Number(m[2] || 0);
+      if (Number.isFinite(h) && Number.isFinite(mm)) return Math.max(1, Math.round(h * 60 + mm));
+    }
+    m = x.match(/^(\d+)м(?:ин)?$/i);
+    if (m) return Number(m[1]);
+    m = x.match(/^(\d+(?:\.\d+)?)час(?:а|ов)?$/i);
+    if (m) return Math.max(1, Math.round(Number(m[1]) * 60));
+    m = x.match(/^(\d+)мин(?:ут[аы]?)?$/i);
+    if (m) return Number(m[1]);
+    m = x.match(/^(\d+)h(\d{1,2})m$/i);
+    if (m) return Number(m[1]) * 60 + Number(m[2]);
+    m = x.match(/^(\d+)hr?s?(\d{1,2})m(?:in)?s?$/i);
+    if (m) return Number(m[1]) * 60 + Number(m[2]);
+    return null;
+  };
+
+  const parseDurationPair = (a, b) => {
+    const n = Number(String(a || '').replace(',', '.'));
+    if (!Number.isFinite(n)) return null;
+    const u = String(b || '').toLowerCase();
+    if (/^(мин|м|min|minute|minutes)$/.test(u)) return Math.max(1, Math.round(n));
+    if (/^(ч|час|часа|часов|h|hr|hrs|hour|hours)$/.test(u)) return Math.max(1, Math.round(n * 60));
+    if (/^(д|дн|дня|дней|day|days)$/.test(u)) return Math.max(1, Math.round(n * 1440));
+    return null;
+  };
+
+  const parseRepeat = (t1, t2) => {
+    const a = String(t1 || '').toLowerCase();
+    const b = String(t2 || '').toLowerCase();
+    if (['daily','ежедневно'].includes(a)) return { rule: 'daily', used: 1 };
+    if (['weekly','еженедельно'].includes(a)) return { rule: 'weekly', used: 1 };
+    if (['monthly','ежемесячно'].includes(a)) return { rule: 'monthly', used: 1 };
+    if (['yearly','ежегодно'].includes(a)) return { rule: 'yearly', used: 1 };
+    if (['weekdays','будни'].includes(a)) return { rule: 'weekdays', used: 1 };
+    if (a === 'каждый' && ['день','дня'].includes(b)) return { rule: 'daily', used: 2 };
+    if (a === 'каждую' && b === 'неделю') return { rule: 'weekly', used: 2 };
+    if (a === 'каждый' && b === 'месяц') return { rule: 'monthly', used: 2 };
+    if (a === 'каждый' && b === 'год') return { rule: 'yearly', used: 2 };
+    if (a === 'по' && (b === 'будням' || b === 'будни')) return { rule: 'weekdays', used: 2 };
+    return null;
+  };
+
+  const parseDateAt = (tokens, i) => {
+    const t1 = String(tokens[i] || '').toLowerCase();
+    const t2 = String(tokens[i + 1] || '').toLowerCase();
+    const t3 = String(tokens[i + 2] || '').toLowerCase();
+
+    if (!t1) return null;
+    if (t1 === 'сегодня' || t1 === 'today') return { value: iso(now), used: 1 };
+    if (t1 === 'завтра' || t1 === 'tomorrow') return { value: iso(addDays(now, 1)), used: 1 };
+    if (t1 === 'послезавтра') return { value: iso(addDays(now, 2)), used: 1 };
+
+    if (t1 === 'через') {
+      let m = t2.match(/^(\d+)(д|дн|дня|дней|w|нед|недел[яьи]?)$/i);
+      if (m) {
+        const n = Number(m[1]);
+        const u = m[2].toLowerCase();
+        const delta = /^(w|нед)/.test(u) ? n * 7 : n;
+        return { value: iso(addDays(now, delta)), used: 2 };
+      }
+      if (/^\d+$/.test(t2) && /^(д|дн|дня|дней|day|days|неделя|недели|недель|week|weeks)$/.test(t3)) {
+        const n = Number(t2);
+        const delta = /^(нед|week)/.test(t3) ? n * 7 : n;
+        return { value: iso(addDays(now, delta)), used: 3 };
+      }
+    }
+
+    if ((t1 === 'в' || t1 === 'во') && weekdayMap[t2] !== undefined) {
+      const target = weekdayMap[t2];
+      const delta = (target - now.getDay() + 7) % 7 || 7;
+      return { value: iso(addDays(now, delta)), used: 2 };
+    }
+    if (weekdayMap[t1] !== undefined) {
+      const target = weekdayMap[t1];
+      const delta = (target - now.getDay() + 7) % 7 || 7;
+      return { value: iso(addDays(now, delta)), used: 1 };
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t1)) return { value: t1, used: 1 };
+
+    let m = t1.match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/);
+    if (m) {
+      let dd = Number(m[1]);
+      let mm = Number(m[2]);
+      let yy = m[3] ? Number(m[3]) : now.getFullYear();
+      if (yy < 100) yy += 2000;
+      const v = toIsoParts(yy, mm, dd);
+      if (v) return { value: v, used: 1 };
+    }
+
+    if (/^\d{1,2}$/.test(t1) && monthMap[t2]) {
+      const dd = Number(t1);
+      let yy = now.getFullYear();
+      let used = 2;
+      if (/^\d{2,4}$/.test(t3)) { yy = Number(t3); if (yy < 100) yy += 2000; used = 3; }
+      let v = toIsoParts(yy, monthMap[t2], dd);
+      if (v && used === 2) {
+        const dt = new Date(v + 'T00:00:00');
+        const today0 = new Date(iso(now) + 'T00:00:00');
+        if (dt < addDays(today0, -1)) v = toIsoParts(yy + 1, monthMap[t2], dd) || v;
+      }
+      if (v) return { value: v, used };
+    }
+
+    return null;
+  };
+
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const p = tokens[i];
+    const low = String(p || '').toLowerCase();
     if (!p) continue;
-    if (/^#\S+/.test(p)) { tags.push(p.replace(/^#/, "")); continue; }
+
+    if (/^#\S+/.test(p)) { tags.push(p.replace(/^#/, '')); continue; }
+
     const pri = p.match(/^!([1-3])$/);
     if (pri) { pr = parseInt(pri[1], 10); continue; }
-    const tm = p.match(/^(?:в)?(\d{1,2}:\d{2})$/i);
-    if (tm && /^\d{1,2}:\d{2}$/.test(tm[1])) {
-      const [h,m] = tm[1].split(':').map(Number);
-      if (h >= 0 && h < 24 && m >= 0 && m < 60) { dueTime = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`; continue; }
-    }
-    const rem = p.match(/^@?(\d+)(m|min|h|d)$/i);
-    if (rem) {
-      const n = Number(rem[1]);
-      const u = rem[2].toLowerCase();
-      reminderMinutes = u.startsWith('d') ? n * 1440 : u.startsWith('h') ? n * 60 : n;
-      continue;
-    }
-    const rpt = String(p).toLowerCase();
-    if (['daily','ежедневно'].includes(rpt)) { repeatRule = 'daily'; continue; }
-    if (['weekly','еженедельно'].includes(rpt)) { repeatRule = 'weekly'; continue; }
-    if (['monthly','ежемесячно'].includes(rpt)) { repeatRule = 'monthly'; continue; }
-    if (['yearly','ежегодно'].includes(rpt)) { repeatRule = 'yearly'; continue; }
-    if (['weekdays','будни'].includes(rpt)) { repeatRule = 'weekdays'; continue; }
 
-    const d = tokDate(p);
-    if (d) { dueDate = d; continue; }
+    const rep = parseRepeat(tokens[i], tokens[i + 1]);
+    if (rep) { repeatRule = rep.rule; i += (rep.used - 1); continue; }
+
+    if ((low === 'в' || low === 'во') && i + 1 < tokens.length) {
+      const t = parseTimeToken(tokens[i + 1]);
+      if (t) { dueTime = t; i += 1; continue; }
+    }
+    const t = parseTimeToken(p);
+    if (t) { dueTime = t; continue; }
+
+    const rem = parseReminderToken(p);
+    if (rem !== null) { reminderMinutes = rem; continue; }
+
+    if ((low === 'на' || low === 'dur' || low === 'duration' || low === 'длительность') && i + 1 < tokens.length) {
+      const d1 = parseDurationToken(tokens[i + 1]);
+      if (d1 !== null) { durationMinutes = d1; i += 1; continue; }
+      const d2 = parseDurationPair(tokens[i + 1], tokens[i + 2]);
+      if (d2 !== null) { durationMinutes = d2; i += 2; continue; }
+    }
+    const dCompact = parseDurationToken(p);
+    if (dCompact !== null) { durationMinutes = dCompact; continue; }
+
+    const d = parseDateAt(tokens, i);
+    if (d) { dueDate = d.value; i += (d.used - 1); continue; }
 
     kept.push(p);
   }
-  return { title: kept.join(" ").trim(), tags, priority: pr, dueDate, dueTime, reminderMinutes, repeatRule };
+
+  return { title: kept.join(' ').trim(), tags, priority: pr, dueDate, dueTime, reminderMinutes, repeatRule, durationMinutes };
 };
 
 const parseTagsInput = (s) => {
@@ -2062,6 +2233,12 @@ if (!trashMode && t.reminderMinutes !== null && t.reminderMinutes !== undefined)
   c.textContent = '🔔 ' + reminderLabel(t.reminderMinutes);
   p.meta.appendChild(c);
 }
+if (!trashMode && t.durationMinutes !== null && t.durationMinutes !== undefined) {
+  const c = document.createElement('span');
+  c.className = 'chipMeta';
+  c.textContent = '⏱ ' + durationLabel(t.durationMinutes);
+  p.meta.appendChild(c);
+}
 if (!trashMode && Array.isArray(t.subtasks) && t.subtasks.length) {
   const total = t.subtasks.length;
   const doneCount = t.subtasks.filter((x) => x && x.completed).length;
@@ -2803,6 +2980,7 @@ async function addTaskFromRaw(raw, explicitListId = null, explicitDue = null, ex
     dueTime: p.dueTime || null,
     reminderMinutes: p.reminderMinutes ?? null,
     repeatRule: p.repeatRule || null,
+    durationMinutes: p.durationMinutes ?? null,
     tags: p.tags,
     priority,
     notes: null,

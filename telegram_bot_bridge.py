@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -10,6 +11,201 @@ from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 
 from sqlalchemy import and_, select, update, or_, case
+
+
+_MONTHS_RU = {"янв":1,"января":1,"фев":2,"февраля":2,"мар":3,"марта":3,"апр":4,"апреля":4,"май":5,"мая":5,"июн":6,"июня":6,"июл":7,"июля":7,"авг":8,"августа":8,"сен":9,"сент":9,"сентября":9,"окт":10,"октября":10,"ноя":11,"ноября":11,"дек":12,"декабря":12}
+_WEEKDAYS = {"вс":0,"воскресенье":0,"пн":1,"понедельник":1,"вт":2,"вторник":2,"ср":3,"среда":3,"чт":4,"четверг":4,"пт":5,"пятница":5,"сб":6,"суббота":6}
+
+def _iso_date(y:int,m:int,d:int)->Optional[str]:
+    try:
+        dt = date(y,m,d)
+        return dt.isoformat()
+    except Exception:
+        return None
+
+def _parse_time_token(tok:str)->Optional[str]:
+    x=(tok or '').strip().lower()
+    if not x:
+        return None
+    x=re.sub(r'^в(?=\d)','',x)
+    x=re.sub(r'[.,](\d{2})$', r':\1', x)
+    m=re.match(r'^(\d{1,2}):(\d{2})(am|pm)?$', x)
+    if not m:
+        m2=re.match(r'^(\d{1,2})(am|pm)$', x)
+        if m2:
+            h=int(m2.group(1)); mm=0; ap=m2.group(2).lower()
+        else:
+            if re.fullmatch(r'\d{4}', x):
+                h=int(x[:2]); mm=int(x[2:]); ap=''
+            else:
+                return None
+    else:
+        h=int(m.group(1)); mm=int(m.group(2)); ap=(m.group(3) or '').lower()
+    if ap:
+        if h==12: h=0
+        if ap=='pm': h += 12
+    if 0 <= h < 24 and 0 <= mm < 60:
+        return f"{h:02d}:{mm:02d}"
+    return None
+
+def _parse_reminder_token(tok:str)->Optional[int]:
+    m=re.match(r'^@?(\d+)(m|min|h|d)$', (tok or '').strip(), flags=re.I)
+    if not m:
+        return None
+    n=int(m.group(1)); u=m.group(2).lower()
+    return n*1440 if u.startswith('d') else n*60 if u.startswith('h') else n
+
+def _parse_duration_token(tok:str)->Optional[int]:
+    x=(tok or '').strip().lower()
+    if not x:
+        return None
+    x=re.sub(r'^(dur:|duration:|длительность:|~+)', '', x)
+    x=x.replace(',', '.')
+    m=re.match(r'^(\d+(?:\.\d+)?)ч(?:(\d{1,2})м(?:ин)?)?$', x)
+    if m:
+        return max(1, round(float(m.group(1))*60 + int(m.group(2) or 0)))
+    m=re.match(r'^(\d+)м(?:ин)?$', x)
+    if m:
+        return int(m.group(1))
+    m=re.match(r'^(\d+(?:\.\d+)?)час(?:а|ов)?$', x)
+    if m:
+        return max(1, round(float(m.group(1))*60))
+    m=re.match(r'^(\d+)мин(?:ут[аы]?)?$', x)
+    if m:
+        return int(m.group(1))
+    m=re.match(r'^(\d+)h(\d{1,2})m$', x, flags=re.I)
+    if m:
+        return int(m.group(1))*60 + int(m.group(2))
+    return None
+
+def _parse_duration_pair(a:str,b:str)->Optional[int]:
+    try:
+        n=float(str(a).replace(',', '.'))
+    except Exception:
+        return None
+    u=(b or '').strip().lower()
+    if u in {'мин','м','min','minute','minutes'}:
+        return max(1, round(n))
+    if u in {'ч','час','часа','часов','h','hr','hrs','hour','hours'}:
+        return max(1, round(n*60))
+    if u in {'д','дн','дня','дней','day','days'}:
+        return max(1, round(n*1440))
+    return None
+
+def _parse_repeat(tokens:list[str], i:int)->Optional[tuple[str,int]]:
+    a=(tokens[i] if i < len(tokens) else '').lower()
+    b=(tokens[i+1] if i+1 < len(tokens) else '').lower()
+    one={('daily',):'daily',('ежедневно',):'daily',('weekly',):'weekly',('еженедельно',):'weekly',('monthly',):'monthly',('ежемесячно',):'monthly',('yearly',):'yearly',('ежегодно',):'yearly',('weekdays',):'weekdays',('будни',):'weekdays'}
+    for k,v in one.items():
+        if a == k[0]: return (v,1)
+    if a == 'каждый' and b in {'день','дня'}: return ('daily',2)
+    if a == 'каждую' and b == 'неделю': return ('weekly',2)
+    if a == 'каждый' and b == 'месяц': return ('monthly',2)
+    if a == 'каждый' and b == 'год': return ('yearly',2)
+    if a == 'по' and b in {'будням','будни'}: return ('weekdays',2)
+    return None
+
+def _parse_date_tokens(tokens:list[str], i:int)->Optional[tuple[str,int]]:
+    t1=(tokens[i] if i < len(tokens) else '').lower()
+    t2=(tokens[i+1] if i+1 < len(tokens) else '').lower()
+    t3=(tokens[i+2] if i+2 < len(tokens) else '').lower()
+    today=date.today()
+    if t1 in {'сегодня','today'}: return (today.isoformat(),1)
+    if t1 in {'завтра','tomorrow'}: return ((today+timedelta(days=1)).isoformat(),1)
+    if t1 == 'послезавтра': return ((today+timedelta(days=2)).isoformat(),1)
+    if t1 == 'через':
+        m=re.match(r'^(\d+)(д|дн|дня|дней|w|нед|недел[яьи]?)$', t2, flags=re.I)
+        if m:
+            n=int(m.group(1)); u=m.group(2).lower(); delta=n*7 if (u.startswith('w') or u.startswith('нед')) else n
+            return ((today+timedelta(days=delta)).isoformat(),2)
+        if re.fullmatch(r'\d+', t2) and re.match(r'^(д|дн|дня|дней|day|days|неделя|недели|недель|week|weeks)$', t3):
+            n=int(t2); delta=n*7 if (t3.startswith('нед') or t3.startswith('week')) else n
+            return ((today+timedelta(days=delta)).isoformat(),3)
+    if t1 in {'в','во'} and t2 in _WEEKDAYS:
+        target=_WEEKDAYS[t2]; delta=(target - today.weekday() - 1) % 7  # Python Monday=0, JS Sunday=0 mismatch fix later below
+        # easier use datetime.weekday map manually from isoweekday
+        pyw=today.weekday()  # Mon=0..Sun=6
+        target_py={1:0,2:1,3:2,4:3,5:4,6:5,0:6}[target]
+        delta=(target_py - pyw) % 7 or 7
+        return ((today+timedelta(days=delta)).isoformat(),2)
+    if t1 in _WEEKDAYS:
+        pyw=today.weekday()
+        target_py={1:0,2:1,3:2,4:3,5:4,6:5,0:6}[_WEEKDAYS[t1]]
+        delta=(target_py - pyw) % 7 or 7
+        return ((today+timedelta(days=delta)).isoformat(),1)
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', t1):
+        return (t1,1)
+    m=re.match(r'^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$', t1)
+    if m:
+        dd=int(m.group(1)); mm=int(m.group(2)); yy=int(m.group(3)) if m.group(3) else today.year
+        if yy < 100: yy += 2000
+        v=_iso_date(yy,mm,dd)
+        if v: return (v,1)
+    if re.fullmatch(r'\d{1,2}', t1) and t2 in _MONTHS_RU:
+        dd=int(t1); yy=today.year; used=2
+        if re.fullmatch(r'\d{2,4}', t3):
+            yy=int(t3); yy = yy+2000 if yy < 100 else yy; used=3
+        v=_iso_date(yy,_MONTHS_RU[t2],dd)
+        if v and used == 2 and v < (today - timedelta(days=1)).isoformat():
+            v=_iso_date(yy+1,_MONTHS_RU[t2],dd) or v
+        if v: return (v,used)
+    return None
+
+def _parse_quick_add_text(raw:str)->dict:
+    tokens=[t for t in (raw or '').strip().split() if t]
+    kept=[]; tags=[]
+    due_date=None; due_time=None; reminder=None; repeat_rule=None; duration=None; priority=0
+    i=0
+    while i < len(tokens):
+        t=tokens[i]; low=t.lower()
+        if t.startswith('#') and len(t) > 1:
+            tags.append(t[1:]); i += 1; continue
+        m=re.match(r'^!([1-3])$', t)
+        if m:
+            priority=int(m.group(1)); i += 1; continue
+        rep=_parse_repeat(tokens, i)
+        if rep:
+            repeat_rule, used = rep; i += used; continue
+        if low in {'в','во'} and i+1 < len(tokens):
+            tm=_parse_time_token(tokens[i+1])
+            if tm:
+                due_time=tm; i += 2; continue
+        tm=_parse_time_token(t)
+        if tm:
+            due_time=tm; i += 1; continue
+        r=_parse_reminder_token(t)
+        if r is not None:
+            reminder=r; i += 1; continue
+        if low in {'на','dur','duration','длительность'} and i+1 < len(tokens):
+            d=_parse_duration_token(tokens[i+1])
+            if d is not None:
+                duration=d; i += 2; continue
+            d2=_parse_duration_pair(tokens[i+1], tokens[i+2] if i+2 < len(tokens) else '')
+            if d2 is not None:
+                duration=d2; i += 3; continue
+        d=_parse_duration_token(t)
+        if d is not None:
+            duration=d; i += 1; continue
+        dt=_parse_date_tokens(tokens, i)
+        if dt:
+            due_date, used = dt; i += used; continue
+        kept.append(t); i += 1
+    # de-dup tags
+    clean_tags=[]; seen=set()
+    for tg in tags:
+        x=tg.strip().lstrip('#')
+        if x and x not in seen:
+            seen.add(x); clean_tags.append(x)
+    return {
+        'title': ' '.join(kept).strip(),
+        'due_date': due_date,
+        'due_time': due_time,
+        'reminder_minutes': reminder,
+        'repeat_rule': repeat_rule,
+        'duration_minutes': duration,
+        'priority': priority,
+        'tags': clean_tags,
+    }
 
 
 class TelegramBotBridge:
@@ -157,7 +353,7 @@ class TelegramBotBridge:
                     "/today — задачи на сегодня\n"
                     "/next7 — задачи на 7 дней\n"
                     "/inbox — входящие\n"
-                    "/add <текст> — добавить задачу\n"
+                    "/add <текст> — добавить задачу (понимает: сегодня/завтра/дата/время/на 2ч)\n"
                     "/done <id_prefix> — отметить выполненной\n"
                     "/id — показать chat id")
                 return
@@ -243,36 +439,63 @@ class TelegramBotBridge:
         if not inbox_id:
             self._send_message(chat_id, "Не удалось найти список 'Входящие'.")
             return
+
+        parsed = _parse_quick_add_text(title)
+        final_title = (parsed.get("title") or "").strip() or title.strip()
         ts = self.now_ts()
         tid = self.gen_id()
+
+        values = {
+            "id": tid,
+            "user_id": user_id,
+            "title": final_title[:200],
+            "completed": False,
+            "created_at": ts,
+            "updated_at": ts,
+            "completed_at": None,
+            "list_id": inbox_id,
+            "section_id": None,
+            "due_date": parsed.get("due_date"),
+            "due_time": parsed.get("due_time"),
+            "reminder_minutes": parsed.get("reminder_minutes"),
+            "repeat_rule": parsed.get("repeat_rule"),
+            "duration_minutes": parsed.get("duration_minutes"),
+            "pinned": False,
+            "order_index": ts * 1000,
+            "priority": int(parsed.get("priority") or 0),
+            "notes": None,
+            "tags_json": json.dumps(parsed.get("tags") or [], ensure_ascii=False),
+            "subtasks_json": '[]',
+            "trashed": False,
+            "trashed_at": None,
+            "tg_reminder_sent_at": None,
+        }
         with self.engine.begin() as conn:
-            conn.execute(
-                self.tasks.insert().values(
-                    id=tid,
-                    user_id=user_id,
-                    title=title[:200],
-                    completed=False,
-                    created_at=ts,
-                    updated_at=ts,
-                    completed_at=None,
-                    list_id=inbox_id,
-                    section_id=None,
-                    due_date=None,
-                    due_time=None,
-                    reminder_minutes=None,
-                    repeat_rule=None,
-                    pinned=False,
-                    order_index=ts * 1000,
-                    priority=0,
-                    notes=None,
-                    tags_json='[]',
-                    subtasks_json='[]',
-                    trashed=False,
-                    trashed_at=None,
-                    tg_reminder_sent_at=None,
-                )
-            )
-        self._send_message(chat_id, f"➕ Добавил задачу во Входящие:\n{title}\nID: {tid}")
+            conn.execute(self.tasks.insert().values(**values))
+
+        extras = []
+        if values.get("due_date"):
+            extras.append(values["due_date"] + ((" " + values["due_time"]) if values.get("due_time") else ""))
+        if values.get("duration_minutes") is not None:
+            try:
+                dm = int(values["duration_minutes"])
+                if dm >= 60 and (dm % 60):
+                    extras.append(f"⏱ {dm//60}ч {dm%60}м")
+                elif dm >= 60:
+                    extras.append(f"⏱ {dm//60}ч")
+                else:
+                    extras.append(f"⏱ {dm}м")
+            except Exception:
+                pass
+        if values.get("reminder_minutes") is not None:
+            extras.append(f"🔔 {int(values['reminder_minutes'])}м")
+        if values.get("repeat_rule"):
+            extras.append(f"↻ {values['repeat_rule']}")
+        if parsed.get("tags"):
+            extras.append(" ".join("#" + t for t in parsed["tags"]))
+
+        meta = ("\n" + " · ".join(extras)) if extras else ""
+        self._send_message(chat_id, f"➕ Добавил задачу во Входящие:\n{final_title}{meta}\nID: {tid}")
 
     def _cmd_done(self, user_id: str, chat_id: str, arg: str):
         q = (arg or "").strip()
@@ -356,6 +579,7 @@ class TelegramBotBridge:
                     self.tasks.c.due_time,
                     self.tasks.c.priority,
                     self.tasks.c.pinned,
+                    self.tasks.c.duration_minutes,
                 )
                 .where(and_(*conds))
                 .order_by(pin_first.asc(), nulls_date.asc(), self.tasks.c.due_date.asc(), nulls_time.asc(), self.tasks.c.due_time.asc(), self.tasks.c.created_at.desc())
@@ -378,7 +602,14 @@ class TelegramBotBridge:
             except Exception:
                 pass
             pin = " 📌" if bool(r.pinned) else ""
-            lines.append(f"• {r.title[:90]}{p}{pin}{due}\n  id: {r.id}")
+            dur = ""
+            try:
+                if r.duration_minutes is not None:
+                    dm = int(r.duration_minutes)
+                    dur = f" · ⏱ {dm//60}ч {dm%60}м" if (dm >= 60 and dm % 60) else (f" · ⏱ {dm//60}ч" if dm >= 60 else f" · ⏱ {dm}м")
+            except Exception:
+                dur = ""
+            lines.append(f"• {r.title[:90]}{p}{pin}{due}{dur}\n  id: {r.id}")
         if len(rows) >= 20:
             lines.append("…показаны первые 20")
         return "\n".join(lines)

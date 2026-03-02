@@ -210,6 +210,7 @@ tasks = Table(
     Column("due_time", String, nullable=True),
     Column("reminder_minutes", Integer, nullable=True),
     Column("repeat_rule", String, nullable=True),
+    Column("duration_minutes", Integer, nullable=True),
     Column("pinned", Boolean, nullable=False, server_default="false"),
     Column("order_index", BigInteger, nullable=True),
     Column("priority", Integer, nullable=False, server_default="0"),
@@ -292,6 +293,17 @@ def validate_reminder_minutes(v: Optional[int]) -> Optional[int]:
         raise HTTPException(status_code=400, detail="Invalid reminder value")
     if n < 0 or n > 60 * 24 * 365:
         raise HTTPException(status_code=400, detail="Reminder value out of range")
+    return n
+
+def validate_duration_minutes(v: Optional[int]) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        n = int(v)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid duration value")
+    if n <= 0 or n > 60 * 24 * 365:
+        raise HTTPException(status_code=400, detail="Duration value out of range")
     return n
 
 def parse_tags_json(s: str) -> List[str]:
@@ -405,6 +417,7 @@ def init_db():
             "due_time": "due_time TEXT",
             "reminder_minutes": "reminder_minutes INTEGER",
             "repeat_rule": "repeat_rule TEXT",
+            "duration_minutes": "duration_minutes INTEGER",
             "pinned": "pinned BOOLEAN NOT NULL DEFAULT false",
             # new features
             "order_index": "order_index BIGINT",
@@ -577,6 +590,7 @@ class TaskCreate(BaseModel):
     dueTime: Optional[str] = None
     reminderMinutes: Optional[int] = None
     repeatRule: Optional[str] = None
+    durationMinutes: Optional[int] = None
     pinned: bool = False
     tags: List[str] = Field(default_factory=list)
     priority: int = Field(default=0, ge=0, le=3)
@@ -592,6 +606,7 @@ class TaskUpdate(BaseModel):
     dueTime: Optional[Optional[str]] = None
     reminderMinutes: Optional[Optional[int]] = None
     repeatRule: Optional[Optional[str]] = None
+    durationMinutes: Optional[Optional[int]] = None
     pinned: Optional[bool] = None
     tags: Optional[List[str]] = None
     priority: Optional[int] = Field(default=None, ge=0, le=3)
@@ -611,6 +626,7 @@ class TaskOut(BaseModel):
     dueTime: Optional[str] = None
     reminderMinutes: Optional[int] = None
     repeatRule: Optional[str] = None
+    durationMinutes: Optional[int] = None
     pinned: bool = False
     orderIndex: Optional[int] = None
     tags: List[str] = Field(default_factory=list)
@@ -632,6 +648,7 @@ def to_task_out(r):
         dueTime=r.get("due_time"),
         reminderMinutes=(int(r.get("reminder_minutes")) if r.get("reminder_minutes") is not None else None),
         repeatRule=(r.get("repeat_rule") or None),
+        durationMinutes=(int(r.get("duration_minutes")) if r.get("duration_minutes") is not None else None),
         pinned=bool(r.get("pinned") or False),
         orderIndex=(int(r["order_index"]) if r.get("order_index") is not None else None),
         tags=parse_tags_json(r.get("tags_json") or "[]"),
@@ -1064,6 +1081,7 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
         due_time = validate_time_str(payload.dueTime)
         reminder_minutes = validate_reminder_minutes(payload.reminderMinutes)
         repeat_rule = validate_repeat_rule(payload.repeatRule)
+        duration_minutes = validate_duration_minutes(payload.durationMinutes)
         if due is None:
             due_time = None
             reminder_minutes = None
@@ -1072,7 +1090,7 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
         stmt = insert(tasks).values(
             id=tid,user_id=user["id"],title=title,completed=False,created_at=ts,updated_at=ts,completed_at=None,
             list_id=list_id,section_id=section_id,due_date=due,due_time=due_time,
-            reminder_minutes=reminder_minutes, repeat_rule=repeat_rule, pinned=bool(payload.pinned),
+            reminder_minutes=reminder_minutes, repeat_rule=repeat_rule, duration_minutes=duration_minutes, pinned=bool(payload.pinned),
             order_index=order_index,
             priority=int(payload.priority or 0),
             trashed=False, trashed_at=None,
@@ -1131,6 +1149,8 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
         values["reminder_minutes"] = validate_reminder_minutes(payload.reminderMinutes)
     if "repeatRule" in fields_set:
         values["repeat_rule"] = validate_repeat_rule(payload.repeatRule)
+    if "durationMinutes" in fields_set:
+        values["duration_minutes"] = validate_duration_minutes(payload.durationMinutes)
     if payload.pinned is not None:
         values["pinned"] = bool(payload.pinned)
     if payload.tags is not None: values["tags_json"]=dumps_tags(payload.tags)
