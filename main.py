@@ -19,6 +19,8 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 from sqlalchemy import inspect
 
+from telegram_bot_bridge import TelegramBotBridge
+
 def normalize_database_url(url: str) -> str:
     return "postgresql://" + url[len("postgres://"):] if url.startswith("postgres://") else url
 
@@ -152,6 +154,11 @@ users = Table(
     Column("email", String, nullable=False),
     Column("password_hash", String, nullable=False),
     Column("created_at", BigInteger, nullable=False),
+    Column("telegram_chat_id", String, nullable=True),
+    Column("telegram_username", String, nullable=True),
+    Column("telegram_link_code", String, nullable=True),
+    Column("telegram_link_code_created_at", BigInteger, nullable=True),
+    Column("telegram_notify_enabled", Boolean, nullable=True, server_default="false"),
 )
 
 folders = Table(
@@ -209,6 +216,7 @@ tasks = Table(
     Column("notes", Text, nullable=True),
     Column("tags_json", Text, nullable=False, server_default="[]"),
     Column("subtasks_json", Text, nullable=False, server_default="[]"),
+    Column("tg_reminder_sent_at", BigInteger, nullable=True),
     Column("trashed", Boolean, nullable=False, server_default="false"),
     Column("trashed_at", BigInteger, nullable=True),
 )
@@ -405,6 +413,7 @@ def init_db():
             "completed_at": "completed_at BIGINT",
             "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",
             "subtasks_json": "subtasks_json TEXT NOT NULL DEFAULT '[]'",
+            "tg_reminder_sent_at": "tg_reminder_sent_at BIGINT",
             "trashed": "trashed BOOLEAN NOT NULL DEFAULT false",
             "trashed_at": "trashed_at BIGINT",
 
@@ -431,6 +440,15 @@ def init_db():
     if insp.has_table("folders"):
         ensure_columns("folders", {
             "user_id": "user_id TEXT",
+        })
+
+    if insp.has_table("users"):
+        ensure_columns("users", {
+            "telegram_chat_id": "telegram_chat_id TEXT",
+            "telegram_username": "telegram_username TEXT",
+            "telegram_link_code": "telegram_link_code TEXT",
+            "telegram_link_code_created_at": "telegram_link_code_created_at BIGINT",
+            "telegram_notify_enabled": "telegram_notify_enabled BOOLEAN DEFAULT false",
         })
 
     # Users: best-effort unique email index (Postgres + SQLite)
@@ -500,6 +518,7 @@ with engine.begin() as conn:
         pass
 
 app = FastAPI(title="TickTick-like ToDo (v4-fixed)")
+tg_bridge = TelegramBotBridge(engine=engine, users=users, tasks=tasks, lists=lists, now_ts_fn=now_ts, gen_id_fn=gen_id, logger=lambda m: print(f"[tg] {m}"))
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 Filter = Literal["all", "active", "completed", "trash"]
@@ -1059,7 +1078,8 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
             trashed=False, trashed_at=None,
             notes=(payload.notes.strip() if payload.notes else None),
             tags_json=dumps_tags(payload.tags),
-            subtasks_json=dumps_subtasks(payload.subtasks)
+            subtasks_json=dumps_subtasks(payload.subtasks),
+            tg_reminder_sent_at=None
         ).returning(tasks)
         row = conn.execute(stmt).mappings().first()
     return to_task_out(row)
@@ -1122,6 +1142,10 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
         tr = bool(payload.trashed)
         values["trashed"] = tr
         values["trashed_at"] = now_ts() if tr else None
+
+    # Reset Telegram reminder delivery marker if schedule/completion/trash changed
+    if ("dueDate" in fields_set) or ("dueTime" in fields_set) or ("reminderMinutes" in fields_set) or (payload.completed is not None) or (payload.trashed is not None):
+        values["tg_reminder_sent_at"] = None
 
     # normalize schedule consistency: time/reminder require a date
     effective_due = values.get("due_date", cur.get("due_date"))
@@ -1321,6 +1345,145 @@ def get_stats(days: int = 14, user=Depends(require_user)):
             'completionRate': completion_rates,
         }
     }
+
+
+# --- Telegram bot integration ---
+
+def generate_telegram_link_code() -> str:
+    return (os.urandom(4).hex() + os.urandom(2).hex()).upper()
+
+
+def ensure_telegram_link_code(conn, user_id: str, force_new: bool = False) -> str:
+    row = conn.execute(select(users).where(users.c.id == user_id)).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    code = (row.get("telegram_link_code") or "").strip()
+    created = int(row.get("telegram_link_code_created_at") or 0)
+    expired = (not created) or (now_ts() - created > 86400)
+    if force_new or (not code) or expired:
+        code = generate_telegram_link_code()
+        conn.execute(
+            update(users)
+            .where(users.c.id == user_id)
+            .values(telegram_link_code=code, telegram_link_code_created_at=now_ts())
+        )
+    return code
+
+
+class TelegramSettingsOut(BaseModel):
+    accountId: str
+    botConfigured: bool
+    botUsername: Optional[str] = None
+    linked: bool
+    linkCode: Optional[str] = None
+    telegramChatId: Optional[str] = None
+    telegramUsername: Optional[str] = None
+    notifyEnabled: bool = False
+    codeExpiresInSec: Optional[int] = None
+    lastBotError: Optional[str] = None
+
+
+class TelegramSettingsPatch(BaseModel):
+    notifyEnabled: Optional[bool] = None
+
+
+def telegram_settings_payload(urow: dict) -> TelegramSettingsOut:
+    code = (urow.get("telegram_link_code") or None)
+    created = int(urow.get("telegram_link_code_created_at") or 0) if urow.get("telegram_link_code_created_at") else 0
+    ttl = None
+    if code and created:
+        ttl = max(0, 86400 - (now_ts() - created))
+    linked = bool((urow.get("telegram_chat_id") or "").strip())
+    return TelegramSettingsOut(
+        accountId=urow["id"],
+        botConfigured=tg_bridge.is_configured(),
+        botUsername=tg_bridge.bot_username,
+        linked=linked,
+        linkCode=(None if linked else code),
+        telegramChatId=(str(urow.get("telegram_chat_id")) if urow.get("telegram_chat_id") else None),
+        telegramUsername=(urow.get("telegram_username") or None),
+        notifyEnabled=bool(urow.get("telegram_notify_enabled") or False),
+        codeExpiresInSec=ttl,
+        lastBotError=(tg_bridge.last_error if tg_bridge.is_configured() else None),
+    )
+
+
+@app.get('/api/settings/telegram', response_model=TelegramSettingsOut)
+def get_telegram_settings(user=Depends(require_user)):
+    with engine.begin() as conn:
+        if not (user.get('id') and user['id'] != PUBLIC_UID):
+            # guest can see account id but linking disabled conceptually; still generate code not useful
+            urow = conn.execute(select(users).where(users.c.id == user['id'])).mappings().first()
+            if not urow:
+                # synthesize guest-like payload
+                return TelegramSettingsOut(accountId=user['id'], botConfigured=tg_bridge.is_configured(), botUsername=tg_bridge.bot_username, linked=False, linkCode=None, notifyEnabled=False, lastBotError=tg_bridge.last_error)
+        ensure_telegram_link_code(conn, user['id'], force_new=False)
+        urow = conn.execute(select(users).where(users.c.id == user['id'])).mappings().first()
+        return telegram_settings_payload(urow)
+
+
+@app.post('/api/settings/telegram/regenerate', response_model=TelegramSettingsOut)
+def regenerate_telegram_link(user=Depends(require_user)):
+    with engine.begin() as conn:
+        ensure_telegram_link_code(conn, user['id'], force_new=True)
+        urow = conn.execute(select(users).where(users.c.id == user['id'])).mappings().first()
+        return telegram_settings_payload(urow)
+
+
+@app.patch('/api/settings/telegram', response_model=TelegramSettingsOut)
+def patch_telegram_settings(payload: TelegramSettingsPatch, user=Depends(require_user)):
+    with engine.begin() as conn:
+        values = {}
+        if payload.notifyEnabled is not None:
+            values['telegram_notify_enabled'] = bool(payload.notifyEnabled)
+        if values:
+            conn.execute(update(users).where(users.c.id == user['id']).values(**values))
+        ensure_telegram_link_code(conn, user['id'], force_new=False)
+        urow = conn.execute(select(users).where(users.c.id == user['id'])).mappings().first()
+        return telegram_settings_payload(urow)
+
+
+@app.post('/api/settings/telegram/unlink', response_model=TelegramSettingsOut)
+def unlink_telegram(user=Depends(require_user)):
+    with engine.begin() as conn:
+        conn.execute(update(users).where(users.c.id == user['id']).values(telegram_chat_id=None, telegram_username=None, telegram_notify_enabled=False))
+        ensure_telegram_link_code(conn, user['id'], force_new=True)
+        urow = conn.execute(select(users).where(users.c.id == user['id'])).mappings().first()
+        return telegram_settings_payload(urow)
+
+
+@app.post('/api/settings/telegram/test')
+def send_telegram_test(user=Depends(require_user)):
+    with engine.connect() as conn:
+        urow = conn.execute(select(users).where(users.c.id == user['id'])).mappings().first()
+    if not urow:
+        raise HTTPException(status_code=404, detail='User not found')
+    chat_id = (urow.get('telegram_chat_id') or '').strip()
+    if not chat_id:
+        raise HTTPException(status_code=400, detail='Telegram не подключен')
+    if not tg_bridge.is_configured():
+        raise HTTPException(status_code=400, detail='TELEGRAM_BOT_TOKEN не настроен на сервере')
+    ok = tg_bridge._send_message(chat_id, f"✅ Тестовое сообщение ClockTime\nАккаунт: {user['id']}")
+    if not ok:
+        raise HTTPException(status_code=502, detail='Не удалось отправить сообщение Telegram')
+    return {'ok': True}
+
+
+@app.on_event('startup')
+def _start_background_integrations():
+    try:
+        tg_bridge.start()
+    except Exception:
+        pass
+
+
+@app.on_event('shutdown')
+def _stop_background_integrations():
+    try:
+        tg_bridge.stop()
+    except Exception:
+        pass
+
 
 FRONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 if os.path.isdir(FRONT_DIR):

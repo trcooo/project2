@@ -784,3 +784,160 @@ body[data-mode="today"] .completed-wrap.open .completed-body{opacity:1;transform
 body[data-mode="today"] #completedTasks{margin-top:6px}
 body[data-mode="today"] .completed-wrap #completedTasks .task{opacity:0;transform:translateY(-2px);transition:opacity .18s ease,transform .18s ease}
 body[data-mode="today"] .completed-wrap.open #completedTasks .task{opacity:1;transform:translateY(0)}
+/* --- Mobile polish v3 --- */
+body.sheet-open{overflow:hidden}
+body.sheet-open .container{overscroll-behavior:contain}
+
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+
+.row code{display:inline-block;white-space:nowrap;overflow:auto;max-width:100%}
+.row > *{min-width:0}
+
+@media (max-width: 899px){
+  .container{padding:10px 10px calc(172px + env(safe-area-inset-bottom));scrollbar-gutter:auto}
+  .topbar{height:52px}
+  .topbar-inner{padding:0 8px;gap:6px}
+  .tb-left{gap:6px}
+  .tb-right{gap:6px}
+  .title-main{font-size:18px;max-width:min(62vw,340px)}
+  .icon-btn{width:38px;height:38px;border-radius:12px}
+
+  /* Sidebar drawer: full-height and stable width */
+  .drawer.sidebar{width:min(92vw,360px);max-width:92vw}
+  .sidebar-inner{padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  .drawer-nav{overflow:auto}
+
+  /* Task list rows: prevent horizontal squeeze */
+  .tasks{gap:8px}
+  .task{border-radius:14px}
+  .task-card{
+    padding:12px;
+    gap:10px;
+    align-items:flex-start;
+    flex-wrap:wrap;
+    min-width:0;
+  }
+  .checkbox{margin-top:2px}
+  .task-main{min-width:0;flex:1 1 calc(100% - 110px)}
+  .task-title{white-space:normal;line-height:1.25;align-items:flex-start;word-break:break-word}
+  .task-meta{margin-top:5px;gap:6px}
+  .task-actions{margin-left:auto;gap:6px;align-self:flex-start;flex:0 0 auto}
+  .small-btn{padding:8px 9px;border-radius:10px}
+  .due{
+    order:4;
+    width:100%;
+    max-width:none;
+    min-width:0;
+    text-align:left;
+    white-space:normal;
+    padding-left:28px;
+    line-height:1.25;
+  }
+  .task-card > .due:empty{display:none}
+
+  /* Composer and bottom nav */
+  .composer{
+    width:calc(100% - 16px);
+    left:8px;
+    right:8px;
+    transform:none;
+    bottom:calc(72px + env(safe-area-inset-bottom));
+    gap:8px;
+    padding:8px;
+    border-radius:18px;
+  }
+  .comp-btn{width:40px;height:40px;flex:0 0 40px}
+  .comp-input{min-width:0;font-size:15px}
+  .bottom-nav{
+    width:calc(100% - 16px);
+    left:8px;
+    right:8px;
+    transform:none;
+    bottom:calc(8px + env(safe-area-inset-bottom));
+    padding:8px;
+    border-radius:16px;
+  }
+  .bn-item{width:calc(33.333% - 4px);max-width:none;height:40px}
+
+  /* Sheets become comfortable scrollable panels */
+  .sheet-backdrop{backdrop-filter:blur(2px)}
+  .sheet{
+    padding:12px 10px calc(10px + env(safe-area-inset-bottom));
+    max-height:min(90vh, 760px);
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  .sheet-title{margin-bottom:8px;padding:0 2px}
+  .sheet-form,
+  .pick-list{max-width:none;width:100%;min-width:0}
+  .sheet-form{overflow:auto;padding-right:2px;gap:10px}
+  .sheet-option{max-width:none;margin:0 0 8px;padding:13px 14px}
+  .sheet-row{align-items:flex-start;flex-direction:column;gap:6px}
+  .sheet-label{min-width:0;font-size:12px}
+  .sheet-form input[type="text"], .sheet-form select, .sheet-form textarea, .sheet-date{font-size:16px}
+  .sheet-actions{
+    position:sticky;
+    bottom:0;
+    padding-top:8px;
+    margin-top:2px;
+    background:linear-gradient(180deg, transparent, var(--panel) 28%);
+    gap:8px;
+  }
+  .sheet-actions .btn{flex:1 1 calc(50% - 8px);min-width:120px;text-align:center}
+
+  /* Mobile settings/stats/auth layouts */
+  .modal{inset:0;border-radius:0;max-width:none}
+  .modal-head{padding:10px 12px}
+  .modal-body{grid-template-columns:1fr}
+  .modal-nav{
+    border-right:0;
+    border-bottom:1px solid var(--line);
+    display:flex;
+    gap:8px;
+    flex-wrap:nowrap;
+    overflow:auto hidden;
+    white-space:nowrap;
+    max-height:none;
+    padding:8px 10px;
+    scrollbar-width:none;
+  }
+  .modal-nav::-webkit-scrollbar{display:none}
+  .mnav-item{flex:0 0 auto;padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.02)}
+  .modal-content{padding:12px 12px 18px}
+  .card{padding:8px 10px}
+  .row{align-items:flex-start;flex-wrap:wrap;gap:8px;padding:10px 4px}
+  .row > :last-child{margin-left:auto;text-align:right}
+
+  .auth-card{width:calc(100% - 16px);padding:14px 12px 12px;border-radius:16px}
+  .auth-head{gap:8px;align-items:flex-start;flex-wrap:wrap}
+  .auth-tabs{width:100%;justify-content:space-between}
+  .auth-tab{flex:1 1 0;text-align:center}
+
+  .stats-top{gap:8px;flex-wrap:wrap;padding:10px 12px}
+  .stats-title{font-size:18px}
+  .stats-tabs{order:3;width:100%;justify-content:center}
+  .stats-body{padding:10px 12px 16px}
+  .stats-kpis{flex-direction:column;gap:8px}
+  .kpi-num{font-size:28px}
+
+  /* Calendar: prevent cramped month cells */
+  #viewCalendar.view-active{min-width:0}
+  #viewCalendar .calendar{overflow:auto}
+  #viewCalendar .cal-head,
+  #viewCalendar .cal-grid{min-width:700px}
+  .calbar{width:100%;gap:8px;overflow:auto hidden;padding-bottom:2px;justify-content:flex-start}
+  .cal-title{font-size:18px;flex:0 0 auto}
+  .cal-actions{gap:6px;flex:0 0 auto}
+  .cal-btn{height:32px;padding:0 9px;white-space:nowrap}
+}
+
+@media (max-width: 430px){
+  .composer{gap:6px;padding:6px}
+  .comp-btn{width:38px;height:38px;flex-basis:38px}
+  .comp-input{font-size:14px}
+  .sheet-actions .btn{flex:1 1 100%}
+  .task-actions .small-btn{padding:7px 8px}
+  .due{padding-left:0}
+  .task-card{gap:8px}
+}

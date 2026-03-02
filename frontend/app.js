@@ -70,10 +70,14 @@ function openPopover(anchorEl, items, { title = null, width = 260 } = {}) {
   }
   const r = anchorEl.getBoundingClientRect();
   const top = Math.min(window.innerHeight - 10, r.bottom + 8);
-  const left = Math.min(window.innerWidth - 10, r.left);
-  p.style.width = `${width}px`;
+  const desiredWidth = Number(width) || 260;
+  const safeWidth = Math.min(desiredWidth, Math.max(220, window.innerWidth - 20));
+  const maxLeft = Math.max(10, window.innerWidth - safeWidth - 10);
+  const left = Math.max(10, Math.min(maxLeft, r.left));
+  p.style.width = `${safeWidth}px`;
+  p.style.maxWidth = `${Math.max(220, window.innerWidth - 20)}px`;
   p.style.top = `${top}px`;
-  p.style.left = `${Math.max(10, left)}px`;
+  p.style.left = `${left}px`;
   p.hidden = false;
   // keep popover inside viewport (use above anchor if needed)
   requestAnimationFrame(() => {
@@ -325,6 +329,11 @@ const apiGetCounts = () => api("/api/counts");
 const apiGetTags = (params={}) => api("/api/tags?" + new URLSearchParams(params).toString());
 const apiEmptyTrash = () => api("/api/trash/empty", { method: "POST" });
 const apiGetStats = (days=14) => api("/api/stats?" + new URLSearchParams({ days: String(days) }).toString());
+const apiGetTelegramSettings = () => api('/api/settings/telegram');
+const apiRegenerateTelegramLink = () => api('/api/settings/telegram/regenerate', { method: 'POST' });
+const apiPatchTelegramSettings = (p) => api('/api/settings/telegram', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+const apiUnlinkTelegram = () => api('/api/settings/telegram/unlink', { method: 'POST' });
+const apiTelegramTest = () => api('/api/settings/telegram/test', { method: 'POST' });
 
 // If any async code forgets to handle auth errors, bring user back to welcome.
 window.addEventListener("unhandledrejection", (ev) => {
@@ -645,8 +654,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') reminderPollTick();
 });
 
-function openSheet(b, s) { $(b).hidden = false; $(s).hidden = false; }
-function closeSheet(b, s) { $(b).hidden = true; $(s).hidden = true; }
+function _syncSheetLock(){
+  const anyOpen = !!document.querySelector('.sheet:not([hidden])');
+  document.body.classList.toggle('sheet-open', anyOpen);
+}
+function openSheet(b, s) { $(b).hidden = false; $(s).hidden = false; _syncSheetLock(); }
+function closeSheet(b, s) { $(b).hidden = true; $(s).hidden = true; _syncSheetLock(); }
 
 // Layout / modules
 function applyLayout() {
@@ -3542,7 +3555,14 @@ function setSettingsTab(label) {
         <div class="row"><div>Экспорт данных</div><button class="btn" id="btnExport">Скачать JSON</button></div>
         <div class="row"><div class="muted">Импорт</div><button class="btn" id="btnImport" disabled>Скоро</button></div>
       </div>
-      <div class="hint-card">Экспорт включает списки, папки, секции и задачи (активные + выполненные).</div>
+      <div class="card" id="tgCard">
+        <div class="row" style="align-items:flex-start">
+          <div>Telegram Bot (быстрые команды и уведомления)</div>
+          <div class="muted" id="tgBotStatusText">Загрузка…</div>
+        </div>
+        <div id="tgIntegrationBody" class="muted" style="padding:6px 6px 2px;font-size:13px;line-height:1.45">Загружаем состояние интеграции…</div>
+      </div>
+      <div class="hint-card">Экспорт включает списки, папки, секции и задачи (активные + выполненные). Telegram подключается по коду из этого раздела.</div>
     `;
     setTimeout(() => {
       $("btnExport")?.addEventListener('click', async () => {
@@ -3566,6 +3586,66 @@ function setSettingsTab(label) {
           alert('Не удалось экспортировать');
         }
       });
+
+      (async () => {
+        const host = $("tgIntegrationBody");
+        const statusText = $("tgBotStatusText");
+        if (!host) return;
+        const isGuest = !auth.user || auth.user.id === 'public';
+        if (isGuest) {
+          statusText && (statusText.textContent = 'Недоступно в гостевом режиме');
+          host.innerHTML = `Войди в аккаунт, чтобы подключить Telegram-бота и получать уведомления.`;
+          return;
+        }
+        try {
+          const st = await apiGetTelegramSettings();
+          const botHandle = st.botUsername ? '@' + st.botUsername : '(username бота скрыт)';
+          statusText && (statusText.textContent = st.botConfigured ? (st.linked ? 'Подключено' : 'Ожидает привязки') : 'Токен бота не настроен');
+          const codePart = st.linked
+            ? `<div class="row"><span>Telegram</span><span class="muted">${st.telegramUsername ? '@'+st.telegramUsername : (st.telegramChatId || 'подключен')}</span></div>
+               <div class="row"><span>Уведомления в TG</span><button class="toggle ${st.notifyEnabled?'on':''}" id="tgNotifyToggle"><span class="knob"></span></button></div>`
+            : `<div class="row"><span>Код подключения</span><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+                 <code id="tgLinkCode" style="padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--glass2);color:var(--text);font-weight:900;letter-spacing:.5px">${st.linkCode || '—'}</code>
+                 <button class="btn" id="tgCopyCode">Копировать</button>
+                 <button class="btn" id="tgRegenCode">Обновить</button>
+               </div></div>`;
+
+          host.innerHTML = `
+            <div class="row"><span>ID аккаунта ClockTime</span><code style="padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--glass2);color:var(--text);font-weight:800;max-width:320px;overflow:auto">${st.accountId}</code></div>
+            <div class="row"><span>Bot</span><span class="muted">${st.botConfigured ? botHandle : 'не активирован на сервере'}</span></div>
+            ${codePart}
+            <div class="row" style="align-items:flex-start"><span>Как подключить</span><div class="muted" style="text-align:right;max-width:420px">Открой Telegram и напиши боту <b>${botHandle}</b><br>Отправь команду: <code>/link ${st.linkCode || '<код>'}</code></div></div>
+            <div class="row"><span>Быстрые команды</span><div class="muted" style="text-align:right">/today /tasks /next7 /inbox /add /done</div></div>
+            <div class="row"><span>Действия</span><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+              ${st.linked ? '<button class="btn" id="tgTestBtn">Тест</button><button class="btn ghost" id="tgUnlinkBtn">Отвязать</button>' : ''}
+            </div></div>
+            ${st.lastBotError ? `<div style="margin-top:8px;color:#fca5a5;font-size:12px;font-weight:800">Последняя ошибка бота: ${String(st.lastBotError).slice(0,220)}</div>` : ''}
+          `;
+
+          const copyCode = async () => {
+            const code = st.linkCode || '';
+            if (!code) return;
+            try { await navigator.clipboard.writeText(code); alert('Код скопирован'); } catch { alert('Не удалось скопировать'); }
+          };
+          $("tgCopyCode")?.addEventListener('click', copyCode);
+          $("tgRegenCode")?.addEventListener('click', async () => {
+            try { await apiRegenerateTelegramLink(); setSettingsTab('Интеграции и импорт'); } catch (e) { alert(e.message || 'Ошибка'); }
+          });
+          $("tgUnlinkBtn")?.addEventListener('click', async () => {
+            if (!confirm('Отвязать Telegram-чат от аккаунта?')) return;
+            try { await apiUnlinkTelegram(); setSettingsTab('Интеграции и импорт'); } catch (e) { alert(e.message || 'Ошибка'); }
+          });
+          $("tgTestBtn")?.addEventListener('click', async () => {
+            try { await apiTelegramTest(); alert('Тестовое сообщение отправлено'); } catch (e) { alert(e.message || 'Ошибка отправки'); }
+          });
+          $("tgNotifyToggle")?.addEventListener('click', async () => {
+            try { await apiPatchTelegramSettings({ notifyEnabled: !st.notifyEnabled }); setSettingsTab('Интеграции и импорт'); } catch (e) { alert(e.message || 'Ошибка'); }
+          });
+        } catch (e) {
+          statusText && (statusText.textContent = 'Ошибка');
+          host.innerHTML = `<span style="color:#fca5a5">Не удалось загрузить настройки Telegram: ${String(e.message||e)}</span>`;
+        }
+      })();
     }, 0);
     return;
   }
@@ -3614,6 +3694,7 @@ function setSettingsTab(label) {
     <h2 style="margin:0 0 12px;font-weight:950">Аккаунт</h2>
     <div class="card">
       <div class="row"><div>Email</div><div class="muted">${email}</div></div>
+      <div class="row"><div>ID аккаунта</div><code style="padding:6px 8px;border-radius:10px;border:1px solid var(--line);background:var(--glass2);color:var(--text);font-weight:800;max-width:260px;overflow:auto">${auth.user?.id || 'public'}</code></div>
       <div class="row"><div>Режим</div><div class="muted">${isGuest ? 'Гость' : 'Авторизован'}</div></div>
       <div class="row">
         <div></div>
