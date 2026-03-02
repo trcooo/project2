@@ -287,14 +287,114 @@ class TelegramBotBridge:
         except Exception:
             raise RuntimeError(f"Telegram API invalid response: {raw[:200]}")
 
-    def _send_message(self, chat_id: str, text: str):
+    def _send_message(self, chat_id: str, text: str, *, parse_mode: str = "HTML"):
         try:
-            self._tg_api("sendMessage", {"chat_id": str(chat_id), "text": text, "disable_web_page_preview": True}, timeout=20)
+            payload = {"chat_id": str(chat_id), "text": text, "disable_web_page_preview": True}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            self._tg_api("sendMessage", payload, timeout=20)
             return True
         except Exception as e:
             self.last_error = str(e)
             self._log(f"sendMessage failed: {e}")
             return False
+
+    def _h(self, s) -> str:
+        x = "" if s is None else str(s)
+        return (x.replace("&", "&amp;")
+                 .replace("<", "&lt;")
+                 .replace(">", "&gt;"))
+
+    def _fmt_due_human(self, due_date, due_time=None) -> str:
+        if not due_date:
+            return "Без даты"
+        try:
+            d = datetime.strptime(str(due_date), "%Y-%m-%d").date()
+            today = date.today()
+            delta = (d - today).days
+            if delta == 0:
+                label = "Сегодня"
+            elif delta == 1:
+                label = "Завтра"
+            elif delta == -1:
+                label = "Вчера"
+            elif 0 < delta < 7:
+                names = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+                label = f"{names[d.weekday()]} ({d.strftime('%d.%m')})"
+            else:
+                label = d.strftime("%d.%m.%Y")
+            if due_time:
+                return f"{label} в {due_time}"
+            return label
+        except Exception:
+            return f"{due_date}{(' ' + str(due_time)) if due_time else ''}"
+
+    def _fmt_duration(self, minutes) -> str:
+        try:
+            if minutes is None:
+                return ""
+            dm = int(minutes)
+            if dm <= 0:
+                return ""
+            if dm >= 60 and dm % 60:
+                return f"{dm//60} ч {dm%60} мин"
+            if dm >= 60:
+                return f"{dm//60} ч"
+            return f"{dm} мин"
+        except Exception:
+            return ""
+
+    def _fmt_reminder(self, minutes) -> str:
+        try:
+            if minutes is None:
+                return ""
+            rm = int(minutes)
+            if rm < 60:
+                return f"за {rm} мин"
+            if rm % 60 == 0 and rm < 1440:
+                return f"за {rm//60} ч"
+            if rm < 1440:
+                return f"за {rm//60} ч {rm%60} мин"
+            days = rm // 1440
+            return f"за {days} дн"
+        except Exception:
+            return ""
+
+    def _fmt_repeat(self, rule) -> str:
+        m = {
+            "daily": "Ежедневно",
+            "weekdays": "По будням",
+            "weekly": "Еженедельно",
+            "monthly": "Ежемесячно",
+            "yearly": "Ежегодно",
+        }
+        return m.get(str(rule or ""), str(rule or ""))
+
+    def _task_line_html(self, r) -> str:
+        title = self._h((r.title or "")[:90])
+        markers = []
+        try:
+            pr = int(getattr(r, "priority", 0) or 0)
+            if pr > 0:
+                markers.append("❗" * min(3, pr))
+        except Exception:
+            pass
+        if bool(getattr(r, "pinned", False)):
+            markers.append("📌")
+        head = f"• <b>{title}</b>"
+        if markers:
+            head += " " + " ".join(markers)
+        meta = []
+        if getattr(r, "due_date", None):
+            meta.append("📅 " + self._h(self._fmt_due_human(r.due_date, getattr(r, "due_time", None))))
+        dur = self._fmt_duration(getattr(r, "duration_minutes", None))
+        if dur:
+            meta.append("⏱ " + self._h(dur))
+        body = head
+        if meta:
+            body += "\n  " + " • ".join(meta)
+        body += f"\n  <code>{self._h(r.id)}</code>"
+        return body
 
     # ---------- command handling ----------
     def _updates_loop(self):
@@ -337,28 +437,37 @@ class TelegramBotBridge:
                 if arg:
                     return self._cmd_link(chat_id, username, arg)
                 self._send_message(chat_id,
-                    "Привет! Я бот ClockTime.\n\n"
-                    "Чтобы подключить аккаунт:\n"
-                    "1) Открой ClockTime → Настройки → Интеграции и импорт\n"
+                    "👋 <b>ClockTime Bot</b>\n\n"
+                    "Подключу тебя к аккаунту и помогу быстро управлять задачами.\n\n"
+                    "<b>Как подключить:</b>\n"
+                    "1) Открой <b>ClockTime → Настройки → Интеграции и импорт</b>\n"
                     "2) Скопируй код подключения\n"
-                    "3) Отправь: /link <код>\n\n"
-                    "Команды: /tasks /today /next7 /inbox /add /done /unlink /help")
+                    "3) Отправь сюда: <code>/link КОД</code>\n\n"
+                    "<b>Быстрые команды:</b>\n"
+                    "• <code>/today</code> — задачи на сегодня\n"
+                    "• <code>/tasks</code> — активные задачи\n"
+                    "• <code>/add</code> — быстро добавить задачу\n"
+                    "• <code>/help</code> — полный список")
                 return
             if cmd == "/help":
                 self._send_message(chat_id,
-                    "Команды ClockTime:\n"
-                    "/link <код> — привязать аккаунт\n"
-                    "/unlink — отвязать чат\n"
-                    "/tasks — активные задачи (топ)\n"
-                    "/today — задачи на сегодня\n"
-                    "/next7 — задачи на 7 дней\n"
-                    "/inbox — входящие\n"
-                    "/add <текст> — добавить задачу (понимает: сегодня/завтра/дата/время/на 2ч)\n"
-                    "/done <id_prefix> — отметить выполненной\n"
-                    "/id — показать chat id")
+                    "🧭 <b>Команды ClockTime</b>\n\n"
+                    "<b>Привязка</b>\n"
+                    "• <code>/link КОД</code> — подключить аккаунт\n"
+                    "• <code>/unlink</code> — отвязать чат\n"
+                    "• <code>/id</code> — показать chat id\n\n"
+                    "<b>Просмотр задач</b>\n"
+                    "• <code>/today</code> — на сегодня\n"
+                    "• <code>/tasks</code> — активные\n"
+                    "• <code>/next7</code> — на 7 дней\n"
+                    "• <code>/inbox</code> — входящие\n\n"
+                    "<b>Быстрые действия</b>\n"
+                    "• <code>/add текст</code> — добавить задачу\n"
+                    "  <i>Пример:</i> <code>/add репетитор завтра 20:30 на 2ч @30m #учеба</code>\n"
+                    "• <code>/done ID_ПРЕФИКС</code> — отметить выполненной")
                 return
             if cmd == "/id":
-                self._send_message(chat_id, f"Ваш Telegram chat_id: {chat_id}")
+                self._send_message(chat_id, f"🆔 <b>Ваш Telegram chat_id</b>\n<code>{self._h(chat_id)}</code>")
                 return
             if cmd == "/link":
                 return self._cmd_link(chat_id, username, arg)
@@ -367,7 +476,7 @@ class TelegramBotBridge:
 
             user = self._user_by_chat(chat_id)
             if not user:
-                self._send_message(chat_id, "Сначала привяжите аккаунт командой /link <код> (код в настройках ClockTime).")
+                self._send_message(chat_id, "🔗 <b>Аккаунт не подключён</b>\n\nОтправь <code>/link КОД</code> (код возьми в настройках ClockTime).")
                 return
 
             if cmd == "/tasks":
@@ -381,18 +490,18 @@ class TelegramBotBridge:
             if cmd == "/add":
                 title = (arg or "").strip()
                 if not title:
-                    self._send_message(chat_id, "Формат: /add Купить молоко")
+                    self._send_message(chat_id, "✍️ <b>Как добавить задачу</b>\n<code>/add Купить молоко завтра 19:00 @30m</code>")
                     return
                 return self._cmd_add(user["id"], chat_id, title)
             if cmd == "/done":
                 return self._cmd_done(user["id"], chat_id, arg)
 
-            self._send_message(chat_id, "Неизвестная команда. /help")
+            self._send_message(chat_id, "🤔 Неизвестная команда. Открой <code>/help</code> для списка команд.")
 
     def _cmd_link(self, chat_id: str, username: Optional[str], code: str):
         code = (code or "").strip()
         if not code:
-            self._send_message(chat_id, "Использование: /link <код>. Код смотри в Настройки → Интеграции и импорт.")
+            self._send_message(chat_id, "🔗 <b>Подключение аккаунта</b>\nОтправь команду в формате: <code>/link КОД</code>\nКод находится в настройках ClockTime.")
             return
         with self.engine.begin() as conn:
             u = conn.execute(
@@ -401,12 +510,12 @@ class TelegramBotBridge:
                 )
             ).mappings().first()
             if not u:
-                self._send_message(chat_id, "Код не найден или истёк. Сгенерируй новый в настройках ClockTime.")
+                self._send_message(chat_id, "❌ <b>Код не найден</b> или уже недействителен.\nСгенерируй новый код в настройках ClockTime.")
                 return
             # code validity: 24h
             cts = int(u.get("telegram_link_code_created_at") or 0)
             if cts and self.now_ts() - cts > 86400:
-                self._send_message(chat_id, "Код подключения истёк. Сгенерируй новый в настройках ClockTime.")
+                self._send_message(chat_id, "⌛ <b>Код подключения истёк</b>.\nСгенерируй новый код в настройках ClockTime.")
                 return
 
             conn.execute(
@@ -420,7 +529,14 @@ class TelegramBotBridge:
                     telegram_link_code_created_at=None,
                 )
             )
-        self._send_message(chat_id, "✅ Аккаунт ClockTime подключен. Доступны команды: /today /tasks /next7 /inbox")
+        self._send_message(chat_id,\
+            "✅ <b>ClockTime подключён</b>\n\n"\
+            "Теперь доступны команды:\n"\
+            "• <code>/today</code>\n"\
+            "• <code>/tasks</code>\n"\
+            "• <code>/next7</code>\n"\
+            "• <code>/inbox</code>\n"\
+            "• <code>/add ...</code>")
 
     def _cmd_unlink(self, chat_id: str):
         with self.engine.begin() as conn:
@@ -430,14 +546,14 @@ class TelegramBotBridge:
                 .values(telegram_chat_id=None, telegram_username=None, telegram_notify_enabled=False)
             )
         if res.rowcount:
-            self._send_message(chat_id, "🔌 Чат отвязан от ClockTime.")
+            self._send_message(chat_id, "🔌 <b>Чат отвязан</b> от ClockTime. Уведомления больше не будут приходить.")
         else:
-            self._send_message(chat_id, "Этот чат не привязан.")
+            self._send_message(chat_id, "ℹ️ Этот чат сейчас не привязан к аккаунту ClockTime.")
 
     def _cmd_add(self, user_id: str, chat_id: str, title: str):
         inbox_id = self._inbox_list_id(user_id)
         if not inbox_id:
-            self._send_message(chat_id, "Не удалось найти список 'Входящие'.")
+            self._send_message(chat_id, "⚠️ Не удалось найти список <b>«Входящие»</b>. Проверь системные списки в приложении.")
             return
 
         parsed = _parse_quick_add_text(title)
@@ -494,13 +610,37 @@ class TelegramBotBridge:
         if parsed.get("tags"):
             extras.append(" ".join("#" + t for t in parsed["tags"]))
 
-        meta = ("\n" + " · ".join(extras)) if extras else ""
-        self._send_message(chat_id, f"➕ Добавил задачу во Входящие:\n{final_title}{meta}\nID: {tid}")
+        details = []
+        if values.get("due_date"):
+            details.append(("📅", self._fmt_due_human(values["due_date"], values.get("due_time"))))
+        if values.get("duration_minutes") is not None:
+            dur_txt = self._fmt_duration(values.get("duration_minutes"))
+            if dur_txt:
+                details.append(("⏱", dur_txt))
+        if values.get("reminder_minutes") is not None:
+            rem_txt = self._fmt_reminder(values.get("reminder_minutes"))
+            if rem_txt:
+                details.append(("🔔", rem_txt))
+        if values.get("repeat_rule"):
+            details.append(("🔁", self._fmt_repeat(values.get("repeat_rule"))))
+        if parsed.get("tags"):
+            details.append(("🏷️", " ".join("#" + t for t in parsed["tags"])))
+        if values.get("priority"):
+            details.append(("⚡", "Приоритет " + ("❗" * int(values["priority"])) ))
+
+        lines = [
+            "✅ <b>Задача добавлена во «Входящие»</b>",
+            f"<b>{self._h(final_title)}</b>",
+        ]
+        for icon, txt in details:
+            lines.append(f"{icon} {self._h(txt)}")
+        lines.append(f"🆔 <code>{self._h(tid)}</code>")
+        self._send_message(chat_id, "\n".join(lines))
 
     def _cmd_done(self, user_id: str, chat_id: str, arg: str):
         q = (arg or "").strip()
         if not q:
-            self._send_message(chat_id, "Формат: /done <id_prefix>. Пример: /done 1709_")
+            self._send_message(chat_id, "✅ <b>Как завершить задачу</b>\nИспользуй: <code>/done ID_ПРЕФИКС</code>\nПример: <code>/done 1709_</code>")
             return
         with self.engine.begin() as conn:
             rows = conn.execute(
@@ -510,15 +650,15 @@ class TelegramBotBridge:
                 .limit(5)
             ).all()
             if not rows:
-                self._send_message(chat_id, "Задача по такому ID не найдена.")
+                self._send_message(chat_id, "❌ Задача с таким ID (или префиксом) не найдена.")
                 return
             if len(rows) > 1:
                 opts = "\n".join([f"• {r.id} — {r.title[:60]}" for r in rows])
-                self._send_message(chat_id, "Нашёл несколько задач, уточни префикс:\n" + opts)
+                self._send_message(chat_id, "🔎 <b>Нашёл несколько задач</b> — уточни ID-префикс:\n\n<pre>" + self._h(opts) + "</pre>")
                 return
             r = rows[0]
             if bool(r.completed):
-                self._send_message(chat_id, "Эта задача уже выполнена ✅")
+                self._send_message(chat_id, "✅ Эта задача уже была отмечена как выполненная.")
                 return
             ts = self.now_ts()
             conn.execute(
@@ -526,7 +666,7 @@ class TelegramBotBridge:
                 .where(and_(self.tasks.c.id == r.id, self.tasks.c.user_id == user_id))
                 .values(completed=True, completed_at=ts, updated_at=ts, tg_reminder_sent_at=None)
             )
-        self._send_message(chat_id, f"✅ Выполнено: {r.title}\nID: {r.id}")
+        self._send_message(chat_id, f"✅ <b>Задача выполнена</b>\n<b>{self._h(r.title)}</b>\n🆔 <code>{self._h(r.id)}</code>")
 
     def _user_by_chat(self, chat_id: str):
         with self.engine.connect() as conn:
@@ -546,25 +686,31 @@ class TelegramBotBridge:
             ).first()
             return row2[0] if row2 else None
 
+
     def _format_tasks(self, user_id: str, mode: str = "tasks") -> str:
         today = date.today()
         conds = [self.tasks.c.user_id == user_id, self.tasks.c.completed.is_(False), self.tasks.c.trashed.is_(False)]
         header = "Активные задачи"
+        header_icon = "📋"
         if mode == "today":
             conds.append(self.tasks.c.due_date == today.isoformat())
             header = "Сегодня"
+            header_icon = "📅"
         elif mode == "next7":
             conds.append(self.tasks.c.due_date.is_not(None))
             conds.append(self.tasks.c.due_date >= today.isoformat())
             conds.append(self.tasks.c.due_date <= (today + timedelta(days=6)).isoformat())
             header = "Следующие 7 дней"
+            header_icon = "🗓️"
         elif mode == "inbox":
             inbox_id = self._inbox_list_id(user_id)
             if inbox_id:
                 conds.append(self.tasks.c.list_id == inbox_id)
             header = "Входящие"
+            header_icon = "📥"
         else:
             header = "Активные задачи"
+            header_icon = "📋"
 
         pin_first = case((self.tasks.c.pinned.is_(True), 0), else_=1)
         nulls_date = case((self.tasks.c.due_date.is_(None), 1), else_=0)
@@ -587,34 +733,20 @@ class TelegramBotBridge:
             ).all()
 
         if not rows:
-            return f"📭 {header}: задач нет"
+            return f"{header_icon} <b>{self._h(header)}</b>\n\nПока пусто ✨"
 
-        lines = [f"📋 {header} ({len(rows)})"]
+        lines = [f"{header_icon} <b>{self._h(header)}</b> <i>({len(rows)})</i>", ""]
         for r in rows:
-            due = ""
-            if r.due_date:
-                due = f" · {r.due_date}{(' ' + r.due_time) if r.due_time else ''}"
-            p = ""
-            try:
-                pr = int(r.priority or 0)
-                if pr > 0:
-                    p = " " + ("!" * min(3, pr))
-            except Exception:
-                pass
-            pin = " 📌" if bool(r.pinned) else ""
-            dur = ""
-            try:
-                if r.duration_minutes is not None:
-                    dm = int(r.duration_minutes)
-                    dur = f" · ⏱ {dm//60}ч {dm%60}м" if (dm >= 60 and dm % 60) else (f" · ⏱ {dm//60}ч" if dm >= 60 else f" · ⏱ {dm}м")
-            except Exception:
-                dur = ""
-            lines.append(f"• {r.title[:90]}{p}{pin}{due}{dur}\n  id: {r.id}")
+            lines.append(self._task_line_html(r))
+            lines.append("")
         if len(rows) >= 20:
-            lines.append("…показаны первые 20")
-        return "\n".join(lines)
+            lines.append("… показаны первые <b>20</b> задач")
+        lines.append("")
+        lines.append("💡 <i>Завершить задачу:</i> <code>/done ID_ПРЕФИКС</code>")
+        return "\n".join(lines).strip()
 
     # ---------- reminders ----------
+
     def _reminder_loop(self):
         # small delay on startup to let app finish init
         time.sleep(2)
@@ -685,10 +817,11 @@ class TelegramBotBridge:
             if r.get("due_time"):
                 due_text += f" {r['due_time']}"
             txt = (
-                f"🔔 Напоминание ClockTime\n"
-                f"{r['title']}\n"
-                f"Срок: {due_text}\n"
-                f"ID: {r['id']}"
+                "🔔 <b>Напоминание ClockTime</b>\n"
+                f"<b>{self._h(r['title'])}</b>\n"
+                f"📅 {self._h(self._fmt_due_human(r.get('due_date'), r.get('due_time')))}\n"
+                f"🆔 <code>{self._h(r['id'])}</code>\n\n"
+                "✅ <i>Завершить:</i> <code>/done ID_ПРЕФИКС</code>"
             )
             self._send_message(str(r["telegram_chat_id"]), txt)
 
