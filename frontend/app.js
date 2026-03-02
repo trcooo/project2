@@ -5,7 +5,7 @@ const TOKEN_KEY="tt.auth.token.v1";
 const USER_KEY="tt.auth.user.v1";
 
 // Build marker (helps verify Railway deployed the latest bundle)
-console.log("ClockTime build v28-done-dynamic-spring-flip");
+console.log("ClockTime build v29-pro-schedule-pin");
 
 const settings = (() => {
   const defaults = {
@@ -403,6 +403,42 @@ const fmtDueShort = (s) => {
   return `${dd}.${mm}`;
 };
 
+const fmtTime = (s) => {
+  if (!s) return "";
+  const m = String(s).match(/^(\d{2}):(\d{2})/);
+  if (!m) return "";
+  let hh = Number(m[1]);
+  const mm = m[2];
+  if ((settings.timeFormat || '24') === '12') {
+    const ap = hh >= 12 ? 'PM' : 'AM';
+    hh = hh % 12 || 12;
+    return `${hh}:${mm} ${ap}`;
+  }
+  return `${String(hh).padStart(2,'0')}:${mm}`;
+};
+
+const fmtDueShortWithTime = (dateStr, timeStr) => {
+  const d = fmtDueShort(dateStr);
+  const t = fmtTime(timeStr);
+  return d && t ? `${d}, ${t}` : (d || t || "");
+};
+
+function repeatRuleLabel(rule){
+  const r = (rule || '').toLowerCase();
+  if (!r) return 'Не повторять';
+  return ({ daily:'Каждый день', weekdays:'По будням', weekly:'Каждую неделю', monthly:'Каждый месяц', yearly:'Каждый год' }[r]) || 'Повтор';
+}
+
+function reminderLabel(mins){
+  if (mins === null || mins === undefined || mins === '') return 'Без напоминания';
+  const n = Number(mins);
+  if (!Number.isFinite(n)) return 'Без напоминания';
+  if (n === 0) return 'В момент срока';
+  if (n < 60) return `За ${n} мин`;
+  if (n % 1440 === 0) return `За ${n/1440} дн.`;
+  if (n % 60 === 0) return `За ${n/60} ч`;
+  return `За ${n} мин`;
+}
 
 const WEEKDAYS_RU = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
 
@@ -1826,7 +1862,7 @@ function _syncTaskRow(li, t) {
   const keepLeaving = li.classList.contains('leaving');
   const keepEnter = li.classList.contains('enter');
 
-  li.className = "task" + ((!trashMode && t.completed) ? " completed" : "") + (selected ? " selected" : "");
+  li.className = "task" + ((!trashMode && t.completed) ? " completed" : "") + ((!trashMode && t.pinned) ? " pinned" : "") + (selected ? " selected" : "");
   if (trashMode) li.classList.add("trashed");
   if (keepDragging) li.classList.add('dragging');
   if (keepLeaving) li.classList.add('leaving');
@@ -1849,6 +1885,24 @@ function _syncTaskRow(li, t) {
 
 // meta (mobile mostly)
 p.meta.innerHTML = "";
+if (!trashMode && t.pinned) {
+  const c = document.createElement('span');
+  c.className = 'chipMeta pin';
+  c.textContent = '📌 Закреплено';
+  p.meta.appendChild(c);
+}
+if (!trashMode && t.repeatRule) {
+  const c = document.createElement('span');
+  c.className = 'chipMeta repeat';
+  c.textContent = '↻ ' + repeatRuleLabel(t.repeatRule);
+  p.meta.appendChild(c);
+}
+if (!trashMode && t.reminderMinutes !== null && t.reminderMinutes !== undefined) {
+  const c = document.createElement('span');
+  c.className = 'chipMeta reminder';
+  c.textContent = '🔔 ' + reminderLabel(t.reminderMinutes);
+  p.meta.appendChild(c);
+}
 const list = state.lists.find((l) => l.id === t.listId);
 if (!trashMode) {
   if (state.activeKind === "smart" && state.activeId === "today") {
@@ -1886,7 +1940,7 @@ if (!trashMode) {
     p.rmDue.className = "rm-due done-date";
   } else {
     p.rmList.textContent = (isDesktop() ? (list?.title || "Входящие") : "");
-    p.rmDue.textContent = fmtDueShort(t.dueDate) || "";
+    p.rmDue.textContent = fmtDueShortWithTime(t.dueDate, t.dueTime) || "";
     p.rmDue.className = "rm-due";
     if (!t.completed && t.dueDate) {
       const today = iso(new Date());
@@ -2336,6 +2390,10 @@ function openTask(t) {
   $("taskTitle").value = t.title || "";
   $("taskNotes").value = t.notes || "";
   $("taskDueDate").value = t.dueDate || "";
+  $("taskDueTime") && ($("taskDueTime").value = t.dueTime || "");
+  $("taskReminder") && ($("taskReminder").value = (t.reminderMinutes ?? "") === "" ? "" : String(t.reminderMinutes));
+  $("taskRepeat") && ($("taskRepeat").value = t.repeatRule || "");
+  $("taskPinned") && ($("taskPinned").checked = !!t.pinned);
   $("taskTags").value = (t.tags || []).map((x) => "#" + x).join(" ");
   $("taskListSelect").value = t.listId || state.system.inboxId || "";
   document.querySelectorAll("#taskPrio .prio-btn").forEach((b) => b.classList.toggle("active", Number(b.dataset.p) === Number(t.priority || 0)));
@@ -2361,15 +2419,20 @@ function getTaskById(id) {
   return state.tasks.find((x) => x.id === id) || state.done.find((x) => x.id === id) || null;
 }
 
-function fmtDueLong(s) {
-  if (!s) return "Без даты";
-  const t = iso(new Date());
-  const tm = iso(addDays(new Date(), 1));
-  const [y, m, d] = s.split("-");
-  const mm = MONTHS_RU_SHORT[Math.max(0, Math.min(11, Number(m) - 1))] || m;
-  if (s === t) return `Сегодня, ${Number(d)} ${mm}`;
-  if (s === tm) return `Завтра, ${Number(d)} ${mm}`;
-  return `${Number(d)} ${mm}`;
+function fmtDueLong(s, timeStr = null) {
+  if (!s && !timeStr) return "Без даты";
+  let base = "";
+  if (s) {
+    const t = iso(new Date());
+    const tm = iso(addDays(new Date(), 1));
+    const [y, m, d] = s.split("-");
+    const mm = MONTHS_RU_SHORT[Math.max(0, Math.min(11, Number(m) - 1))] || m;
+    if (s === t) base = `Сегодня, ${Number(d)} ${mm}`;
+    else if (s === tm) base = `Завтра, ${Number(d)} ${mm}`;
+    else base = `${Number(d)} ${mm}`;
+  }
+  const tmLabel = fmtTime(timeStr);
+  return base && tmLabel ? `${base}, ${tmLabel}` : (base || tmLabel || "Без даты");
 }
 
 let teTimer = null;
@@ -2429,8 +2492,9 @@ function renderTaskEditor() {
 
   $("teTitle").value = t.title || "";
   $("teNotes").value = t.notes || "";
-  $("teDueText").textContent = fmtDueLong(t.dueDate);
+  $("teDueText").textContent = fmtDueLong(t.dueDate, t.dueTime);
   $("teDueDate").value = t.dueDate || "";
+  $("teDueTime") && ($("teDueTime").value = t.dueTime || "");
   const list = state.lists.find((l) => l.id === t.listId) || state.lists.find((l) => l.systemKey === "inbox") || null;
   $("teListText").textContent = list?.title || "Входящие";
   $("teToggle").classList.toggle("done", !!t.completed);
@@ -2444,6 +2508,14 @@ function renderTaskEditor() {
   });
 
   // Visual hint on buttons
+  $("tePin")?.classList.toggle("active", !!t.pinned);
+  $("tePin") && ($("tePin").title = t.pinned ? "Открепить" : "Закрепить");
+  $("teTime")?.classList.toggle("active", !!t.dueTime);
+  $("teTime") && ($("teTime").title = t.dueTime ? `Время: ${fmtTime(t.dueTime)}` : "Время");
+  $("teReminder")?.classList.toggle("active", t.reminderMinutes !== null && t.reminderMinutes !== undefined);
+  $("teReminder") && ($("teReminder").title = reminderLabel(t.reminderMinutes));
+  $("teRepeat")?.classList.toggle("active", !!t.repeatRule);
+  $("teRepeat") && ($("teRepeat").title = repeatRuleLabel(t.repeatRule));
   $("tePriority")?.classList.toggle("active", Number(t.priority || 0) > 0);
   $("teTags")?.classList.toggle("active", (t.tags || []).length > 0);
 }
@@ -2584,7 +2656,7 @@ async function renderCalendar() {
         ev.className = 'cal-event';
         const col = colorForList(t.listId || state.system.inboxId || 'inbox');
         ev.style.borderLeftColor = col;
-        ev.textContent = t.title;
+        ev.textContent = (t.dueTime ? `${fmtTime(t.dueTime)} ` : '') + t.title;
         ev.addEventListener('click', (e)=>{ e.stopPropagation(); openTask(t); });
         events.appendChild(ev);
       }
@@ -2647,7 +2719,7 @@ async function renderCalendar() {
         const ev=document.createElement('div');
         ev.className='cal-event';
         ev.style.borderLeftColor=colorForList(t.listId||state.system.inboxId||'inbox');
-        ev.textContent=t.title;
+        ev.textContent=(t.dueTime ? `${fmtTime(t.dueTime)} ` : '') + t.title;
         ev.addEventListener('click',(e)=>{e.stopPropagation();openTask(t);});
         events.appendChild(ev);
       }
@@ -2679,7 +2751,7 @@ async function renderCalendar() {
       row.className='cal-event';
       row.style.borderLeftColor=colorForList(t.listId||state.system.inboxId||'inbox');
       row.style.padding='10px 12px';
-      row.textContent=t.title;
+      row.textContent=(t.dueTime ? `${fmtTime(t.dueTime)} ` : "") + t.title;
       row.addEventListener('click', ()=>openTask(t));
       wrap.appendChild(row);
     }
@@ -3383,10 +3455,36 @@ on($("pickCancel"), "click", () => closeSheet("pickBackdrop", "pickSheet"));
 
 // desktop task editor (split)
 on($("teClose"), "click", closeTaskEditor);
-on($("teDueBtn"), "click", () => $("teDueDate")?.click());
+on($("teDueBtn"), "click", () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const now = new Date();
+  const today = iso(now);
+  const tomorrow = iso(addDays(now, 1));
+  const plus7 = iso(addDays(now, 7));
+  const items = [
+    { label: 'Сегодня', value: today, active: t.dueDate === today, onSelect: async (v) => patchSelectedTask({ dueDate: v }, { reload: true }) },
+    { label: 'Завтра', value: tomorrow, active: t.dueDate === tomorrow, onSelect: async (v) => patchSelectedTask({ dueDate: v }, { reload: true }) },
+    { label: 'Через 7 дней', value: plus7, active: t.dueDate === plus7, onSelect: async (v) => patchSelectedTask({ dueDate: v }, { reload: true }) },
+    'sep',
+    { label: 'Без даты', value: '', active: !t.dueDate, onSelect: async () => patchSelectedTask({ dueDate: null, dueTime: null, reminderMinutes: null }, { reload: true }) },
+    { label: 'Выбрать дату…', value: 'pick', onSelect: () => $("teDueDate")?.click?.() },
+  ];
+  openPopover($("teDueBtn"), items, { title: 'Срок исполнения', width: 260 });
+});
 on($("teDueDate"), "change", async () => {
   const v = $("teDueDate").value || null;
   await patchSelectedTask({ dueDate: v }, { reload: true });
+});
+on($("teDueTime"), "change", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const v = $("teDueTime").value || null;
+  if (v && !t.dueDate) {
+    await patchSelectedTask({ dueDate: iso(new Date()), dueTime: v }, { reload: true });
+    return;
+  }
+  await patchSelectedTask({ dueTime: v }, { reload: true });
 });
 on($("teTitle"), "input", () => {
   const v = $("teTitle").value.trim();
@@ -3462,6 +3560,56 @@ on($("teSectionBtn"), "click", async () => {
   openPopover($("teSectionBtn"), items, { title: "Секция", width: 280 });
 });
 
+on($("tePin"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  await patchSelectedTask({ pinned: !t.pinned }, { reload: true });
+});
+
+on($("teTime"), "click", () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const items = [
+    { label: '09:00', value: '09:00', active: t.dueTime === '09:00', onSelect: async (v) => patchSelectedTask({ dueDate: t.dueDate || iso(new Date()), dueTime: v }, { reload: true }) },
+    { label: '12:00', value: '12:00', active: t.dueTime === '12:00', onSelect: async (v) => patchSelectedTask({ dueDate: t.dueDate || iso(new Date()), dueTime: v }, { reload: true }) },
+    { label: '18:00', value: '18:00', active: t.dueTime === '18:00', onSelect: async (v) => patchSelectedTask({ dueDate: t.dueDate || iso(new Date()), dueTime: v }, { reload: true }) },
+    'sep',
+    { label: 'Без времени', value: '', active: !t.dueTime, onSelect: async () => patchSelectedTask({ dueTime: null }, { reload: true }) },
+    { label: 'Выбрать время…', value: 'pick', onSelect: () => $("teDueTime")?.click?.() },
+  ];
+  openPopover($("teTime"), items, { title: 'Время', width: 220 });
+});
+
+on($("teReminder"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const vals = [null, 0, 5, 10, 15, 30, 60, 1440];
+  const items = vals.map((v) => ({
+    label: v === null ? 'Без напоминания' : reminderLabel(v),
+    value: v,
+    active: (t.reminderMinutes ?? null) === v,
+    onSelect: async (val) => {
+      const patch = { reminderMinutes: val };
+      if (val !== null && val !== undefined && !t.dueDate) patch.dueDate = iso(new Date());
+      await patchSelectedTask(patch, { reload: true });
+    },
+  }));
+  openPopover($("teReminder"), items, { title: 'Уведомление', width: 260 });
+});
+
+on($("teRepeat"), "click", async () => {
+  const t = getTaskById(state.selectedTaskId);
+  if (!t) return;
+  const vals = [null, 'daily', 'weekdays', 'weekly', 'monthly', 'yearly'];
+  const items = vals.map((v) => ({
+    label: repeatRuleLabel(v),
+    value: v,
+    active: (t.repeatRule || null) === v,
+    onSelect: async (val) => patchSelectedTask({ repeatRule: val }, { reload: false }),
+  }));
+  openPopover($("teRepeat"), items, { title: 'Повтор', width: 260 });
+});
+
 on($("tePriority"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
   if (!t) return;
@@ -3493,6 +3641,23 @@ on($("teMore"), "click", async () => {
   const t = getTaskById(state.selectedTaskId);
   if (!t) return;
   const items = [
+    {
+      label: t.pinned ? "Открепить" : "Закрепить",
+      value: "pin",
+      icon: '📌',
+      onSelect: async () => {
+        await patchSelectedTask({ pinned: !t.pinned }, { reload: true });
+      }
+    },
+    {
+      label: "Очистить дату/время",
+      value: "clearSchedule",
+      icon: '<svg class="ico sm"><use href="#i-calendar"></use></svg>',
+      onSelect: async () => {
+        await patchSelectedTask({ dueDate: null, dueTime: null, reminderMinutes: null }, { reload: true });
+      }
+    },
+    'sep',
     {
       label: "Удалить задачу",
       value: "delete",
@@ -3575,12 +3740,17 @@ on($("taskForm"), "submit", async (e) => {
   const notes = $("taskNotes").value.trim() || null;
   const listId = $("taskListSelect").value || state.system.inboxId;
   const dueDate = $("taskDueDate").value || null;
+  const dueTime = $("taskDueTime") ? ($("taskDueTime").value || null) : null;
+  const reminderRaw = $("taskReminder") ? $("taskReminder").value : "";
+  const reminderMinutes = reminderRaw === "" ? null : Number(reminderRaw);
+  const repeatRule = $("taskRepeat") ? ($("taskRepeat").value || null) : null;
+  const pinned = $("taskPinned") ? !!$("taskPinned").checked : false;
   const sectionId = $("taskSectionSelect") ? ($("taskSectionSelect").value || "") : "";
   const tags = parseTagsInput($("taskTags").value);
   const prioBtn = [...document.querySelectorAll("#taskPrio .prio-btn")].find((b) => b.classList.contains("active"));
   const priority = prioBtn ? Number(prioBtn.dataset.p) : 0;
 
-  const updated = await apiPatchTask(id, { title, listId, sectionId, dueDate, tags, priority, notes });
+  const updated = await apiPatchTask(id, { title, listId, sectionId, dueDate, dueTime, reminderMinutes, repeatRule, pinned, tags, priority, notes });
 
   closeSheet("taskBackdrop", "taskSheet");
   _upsertTaskLocal(updated);

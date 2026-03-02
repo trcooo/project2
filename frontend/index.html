@@ -277,6 +277,9 @@
               </button>
 
               <div class="te-actions">
+                <button class="icon-btn" id="teTime" title="Время" aria-label="Время">⏰</button>
+                <button class="icon-btn" id="teReminder" title="Напоминание" aria-label="Напоминание">🔔</button>
+                <button class="icon-btn" id="teRepeat" title="Повтор" aria-label="Повтор">↻</button>
                 <button class="icon-btn" id="tePriority" title="Приоритет" aria-label="Приоритет"><svg class="ico sm"><use href="#i-flag"></use></svg></button>
                 <button class="icon-btn" id="teTags" title="Теги" aria-label="Теги"><svg class="ico sm"><use href="#i-tag"></use></svg></button>
                 <button class="icon-btn" id="teMore" title="Ещё" aria-label="Ещё">⋯</button>
@@ -284,6 +287,7 @@
             </div>
 
             <input type="date" id="teDueDate" class="te-date-input" />
+            <input type="time" id="teDueTime" class="te-date-input" step="60" />
           </aside>
         </div>
       </section>
@@ -486,6 +490,38 @@
         <div class="sheet-row">
           <label class="sheet-label">Дата</label>
           <input type="date" id="taskDueDate" class="sheet-date" />
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Время</label>
+          <input type="time" id="taskDueTime" class="sheet-date" step="60" />
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Уведомление</label>
+          <select id="taskReminder" class="sheet-select">
+            <option value="">Нет</option>
+            <option value="0">В момент срока</option>
+            <option value="5">За 5 мин</option>
+            <option value="10">За 10 мин</option>
+            <option value="15">За 15 мин</option>
+            <option value="30">За 30 мин</option>
+            <option value="60">За 1 час</option>
+            <option value="1440">За 1 день</option>
+          </select>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Повтор</label>
+          <select id="taskRepeat" class="sheet-select">
+            <option value="">Не повторять</option>
+            <option value="daily">Каждый день</option>
+            <option value="weekdays">По будням</option>
+            <option value="weekly">Каждую неделю</option>
+            <option value="monthly">Каждый месяц</option>
+            <option value="yearly">Каждый год</option>
+          </select>
+        </div>
+        <div class="sheet-row">
+          <label class="sheet-label">Закрепить</label>
+          <input type="checkbox" id="taskPinned" />
         </div>
         <div class="sheet-row">
           <label class="sheet-label">Приоритет</label>

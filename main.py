@@ -200,6 +200,10 @@ tasks = Table(
     Column("list_id", String, nullable=False),
     Column("section_id", String, nullable=True),
     Column("due_date", String, nullable=True),
+    Column("due_time", String, nullable=True),
+    Column("reminder_minutes", Integer, nullable=True),
+    Column("repeat_rule", String, nullable=True),
+    Column("pinned", Boolean, nullable=False, server_default="false"),
     Column("order_index", BigInteger, nullable=True),
     Column("priority", Integer, nullable=False, server_default="0"),
     Column("notes", Text, nullable=True),
@@ -244,6 +248,42 @@ def validate_date_str(d: Optional[str]) -> Optional[str]:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
     return d
+
+
+def validate_time_str(t: Optional[str]) -> Optional[str]:
+    if t is None:
+        return None
+    t = t.strip()
+    if not t:
+        return None
+    try:
+        datetime.strptime(t, "%H:%M")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid time format. Use HH:MM.")
+    return t
+
+ALLOWED_REPEAT_RULES = {"none", "daily", "weekdays", "weekly", "monthly", "yearly"}
+
+def validate_repeat_rule(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    x = (v or "").strip().lower()
+    if not x or x == "none":
+        return None
+    if x not in ALLOWED_REPEAT_RULES:
+        raise HTTPException(status_code=400, detail=f"Invalid repeat rule: {x}")
+    return x
+
+def validate_reminder_minutes(v: Optional[int]) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        n = int(v)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid reminder value")
+    if n < 0 or n > 60 * 24 * 365:
+        raise HTTPException(status_code=400, detail="Reminder value out of range")
+    return n
 
 def parse_tags_json(s: str) -> List[str]:
     try:
@@ -302,12 +342,18 @@ def init_db():
             "list_id": "list_id TEXT",
             "due_date": "due_date TEXT",
             "section_id": "section_id TEXT",
+            # scheduling / UX
+            "due_time": "due_time TEXT",
+            "reminder_minutes": "reminder_minutes INTEGER",
+            "repeat_rule": "repeat_rule TEXT",
+            "pinned": "pinned BOOLEAN NOT NULL DEFAULT false",
             # new features
             "order_index": "order_index BIGINT",
             "priority": "priority INTEGER NOT NULL DEFAULT 0",
             "notes": "notes TEXT",
             "completed_at": "completed_at BIGINT",
-            "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",            "trashed": "trashed BOOLEAN NOT NULL DEFAULT false",
+            "tags_json": "tags_json TEXT NOT NULL DEFAULT '[]'",
+            "trashed": "trashed BOOLEAN NOT NULL DEFAULT false",
             "trashed_at": "trashed_at BIGINT",
 
         })
@@ -452,6 +498,10 @@ class TaskCreate(BaseModel):
     listId: Optional[str] = Field(default=None)
     sectionId: Optional[str] = Field(default=None)
     dueDate: Optional[str] = None
+    dueTime: Optional[str] = None
+    reminderMinutes: Optional[int] = None
+    repeatRule: Optional[str] = None
+    pinned: bool = False
     tags: List[str] = Field(default_factory=list)
     priority: int = Field(default=0, ge=0, le=3)
     notes: Optional[str] = None
@@ -462,6 +512,10 @@ class TaskUpdate(BaseModel):
     listId: Optional[str] = None
     sectionId: Optional[str] = None
     dueDate: Optional[Optional[str]] = None
+    dueTime: Optional[Optional[str]] = None
+    reminderMinutes: Optional[Optional[int]] = None
+    repeatRule: Optional[Optional[str]] = None
+    pinned: Optional[bool] = None
     tags: Optional[List[str]] = None
     priority: Optional[int] = Field(default=None, ge=0, le=3)
     notes: Optional[Optional[str]] = None
@@ -476,6 +530,10 @@ class TaskOut(BaseModel):
     id: str; title: str; completed: bool
     createdAt: int; updatedAt: int; completedAt: Optional[int] = None
     listId: str; sectionId: Optional[str] = None; dueDate: Optional[str] = None
+    dueTime: Optional[str] = None
+    reminderMinutes: Optional[int] = None
+    repeatRule: Optional[str] = None
+    pinned: bool = False
     orderIndex: Optional[int] = None
     tags: List[str] = Field(default_factory=list)
     priority: int = 0
@@ -492,6 +550,10 @@ def to_task_out(r):
         createdAt=int(r["created_at"]), updatedAt=int(r["updated_at"]),
         completedAt=(int(r["completed_at"]) if r["completed_at"] is not None else None),
         listId=r["list_id"], sectionId=r.get("section_id"), dueDate=r["due_date"],
+        dueTime=r.get("due_time"),
+        reminderMinutes=(int(r.get("reminder_minutes")) if r.get("reminder_minutes") is not None else None),
+        repeatRule=(r.get("repeat_rule") or None),
+        pinned=bool(r.get("pinned") or False),
         orderIndex=(int(r["order_index"]) if r.get("order_index") is not None else None),
         tags=parse_tags_json(r.get("tags_json") or "[]"),
         priority=int(r.get("priority") or 0),
@@ -875,20 +937,23 @@ def list_tasks(filter: Filter="all", sort: Sort="due", list_id: Optional[str]=No
     stmt = select(tasks)
     if conds: stmt = stmt.where(and_(*conds))
 
+    pin_first = case((tasks.c.pinned.is_(True), 0), else_=1)
+
     if sort=="created":
-        stmt = stmt.order_by(tasks.c.created_at.desc())
+        stmt = stmt.order_by(pin_first.asc(), tasks.c.created_at.desc())
     elif sort=="completed":
         nulls_last = case((tasks.c.completed_at.is_(None),1), else_=0)
-        stmt = stmt.order_by(nulls_last.asc(), tasks.c.completed_at.desc(), tasks.c.created_at.desc())
+        stmt = stmt.order_by(pin_first.asc(), nulls_last.asc(), tasks.c.completed_at.desc(), tasks.c.created_at.desc())
     elif sort=="trashed":
         nulls_last = case((tasks.c.trashed_at.is_(None),1), else_=0)
-        stmt = stmt.order_by(nulls_last.asc(), tasks.c.trashed_at.desc(), tasks.c.created_at.desc())
+        stmt = stmt.order_by(pin_first.asc(), nulls_last.asc(), tasks.c.trashed_at.desc(), tasks.c.created_at.desc())
     elif sort=="manual":
         nulls_last = case((tasks.c.order_index.is_(None),1), else_=0)
-        stmt = stmt.order_by(nulls_last.asc(), tasks.c.order_index.asc(), tasks.c.created_at.desc())
+        stmt = stmt.order_by(pin_first.asc(), nulls_last.asc(), tasks.c.order_index.asc(), tasks.c.created_at.desc())
     else:
-        nulls_last = case((tasks.c.due_date.is_(None),1), else_=0)
-        stmt = stmt.order_by(nulls_last.asc(), tasks.c.due_date.asc(), tasks.c.created_at.desc())
+        nulls_date = case((tasks.c.due_date.is_(None),1), else_=0)
+        nulls_time = case((tasks.c.due_time.is_(None),1), else_=0)
+        stmt = stmt.order_by(pin_first.asc(), nulls_date.asc(), tasks.c.due_date.asc(), nulls_time.asc(), tasks.c.due_time.asc(), tasks.c.created_at.desc())
 
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
@@ -916,11 +981,19 @@ def create_task(payload: TaskCreate, user=Depends(require_user)):
                 section_id = None
 
         due = validate_date_str(payload.dueDate)
+        due_time = validate_time_str(payload.dueTime)
+        reminder_minutes = validate_reminder_minutes(payload.reminderMinutes)
+        repeat_rule = validate_repeat_rule(payload.repeatRule)
+        if due is None:
+            due_time = None
+            reminder_minutes = None
         tid = gen_id(); ts = now_ts()
         order_index = ts*1000
         stmt = insert(tasks).values(
             id=tid,user_id=user["id"],title=title,completed=False,created_at=ts,updated_at=ts,completed_at=None,
-            list_id=list_id,section_id=section_id,due_date=due,order_index=order_index,
+            list_id=list_id,section_id=section_id,due_date=due,due_time=due_time,
+            reminder_minutes=reminder_minutes, repeat_rule=repeat_rule, pinned=bool(payload.pinned),
+            order_index=order_index,
             priority=int(payload.priority or 0),
             trashed=False, trashed_at=None,
             notes=(payload.notes.strip() if payload.notes else None),
@@ -934,6 +1007,7 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
     with engine.connect() as conn:
         cur = conn.execute(select(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"]))).mappings().first()
     if not cur: raise HTTPException(status_code=404, detail="Task not found")
+    fields_set = set(getattr(payload, "model_fields_set", None) or getattr(payload, "__fields_set__", set()) or set())
     values={}
     if payload.title is not None:
         t = payload.title.strip()
@@ -963,14 +1037,36 @@ def update_task(task_id: str, payload: TaskUpdate, user=Depends(require_user)):
             with engine.connect() as conn:
                 ensure_section_exists(conn, user["id"], sid, target_list)
             values["section_id"] = sid
-    if payload.dueDate is not None: values["due_date"]=validate_date_str(payload.dueDate)
+    if "dueDate" in fields_set:
+        values["due_date"] = validate_date_str(payload.dueDate)
+        # if date cleared, time/reminder are cleared too (TickTick-like scheduling reset)
+        if values["due_date"] is None:
+            values["due_time"] = None
+            values["reminder_minutes"] = None
+    if "dueTime" in fields_set:
+        values["due_time"] = validate_time_str(payload.dueTime)
+    if "reminderMinutes" in fields_set:
+        values["reminder_minutes"] = validate_reminder_minutes(payload.reminderMinutes)
+    if "repeatRule" in fields_set:
+        values["repeat_rule"] = validate_repeat_rule(payload.repeatRule)
+    if payload.pinned is not None:
+        values["pinned"] = bool(payload.pinned)
     if payload.tags is not None: values["tags_json"]=dumps_tags(payload.tags)
     if payload.priority is not None: values["priority"]=int(payload.priority)
-    if payload.notes is not None: values["notes"]=payload.notes.strip() if payload.notes else None
+    if "notes" in fields_set: values["notes"]=payload.notes.strip() if payload.notes else None
     if payload.trashed is not None:
         tr = bool(payload.trashed)
         values["trashed"] = tr
         values["trashed_at"] = now_ts() if tr else None
+
+    # normalize schedule consistency: time/reminder require a date
+    effective_due = values.get("due_date", cur.get("due_date"))
+    if effective_due is None:
+        if "due_time" in values and values["due_time"] is not None:
+            values["due_time"] = None
+        if "reminder_minutes" in values and values["reminder_minutes"] is not None:
+            values["reminder_minutes"] = None
+
     if not values: raise HTTPException(status_code=400, detail="Nothing to update")
     values["updated_at"]=now_ts()
     stmt = update(tasks).where(and_(tasks.c.id==task_id, tasks.c.user_id==user["id"])).values(**values).returning(tasks)
