@@ -239,6 +239,7 @@ class TelegramBotBridge:
         self._offset = 0
         self.bot_username: Optional[str] = None
         self.last_error: Optional[str] = None
+        self._chat_view_mode: dict[str, str] = {}
 
     # ---------- lifecycle ----------
     def start(self):
@@ -287,17 +288,50 @@ class TelegramBotBridge:
         except Exception:
             raise RuntimeError(f"Telegram API invalid response: {raw[:200]}")
 
-    def _send_message(self, chat_id: str, text: str, *, parse_mode: str = "HTML"):
+    def _send_message(self, chat_id: str, text: str, *, parse_mode: str = "HTML", reply_markup: Optional[dict] = None):
         try:
             payload = {"chat_id": str(chat_id), "text": text, "disable_web_page_preview": True}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
             self._tg_api("sendMessage", payload, timeout=20)
             return True
         except Exception as e:
             self.last_error = str(e)
             self._log(f"sendMessage failed: {e}")
             return False
+
+    def _edit_message(self, chat_id: str, message_id: int, text: str, *, parse_mode: str = "HTML", reply_markup: Optional[dict] = None):
+        try:
+            payload = {"chat_id": str(chat_id), "message_id": int(message_id), "text": text, "disable_web_page_preview": True}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+            self._tg_api("editMessageText", payload, timeout=20)
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            self._log(f"editMessageText failed: {e}")
+            return False
+
+    def _answer_callback(self, callback_id: str, text: Optional[str] = None, show_alert: bool = False):
+        try:
+            payload = {"callback_query_id": str(callback_id)}
+            if text:
+                payload["text"] = str(text)[:180]
+            if show_alert:
+                payload["show_alert"] = True
+            self._tg_api("answerCallbackQuery", payload, timeout=15)
+            return True
+        except Exception as e:
+            self.last_error = str(e)
+            self._log(f"answerCallbackQuery failed: {e}")
+            return False
+
+    def _kb(self, rows: list[list[dict]]) -> dict:
+        return {"inline_keyboard": rows}
 
     def _h(self, s) -> str:
         x = "" if s is None else str(s)
@@ -370,6 +404,35 @@ class TelegramBotBridge:
         }
         return m.get(str(rule or ""), str(rule or ""))
 
+    def _get_view_mode(self, chat_id: str) -> str:
+        v = (self._chat_view_mode.get(str(chat_id)) or "expanded").strip().lower()
+        return "compact" if v == "compact" else "expanded"
+
+    def _set_view_mode(self, chat_id: str, mode: str):
+        m = (mode or "").strip().lower()
+        self._chat_view_mode[str(chat_id)] = "compact" if m == "compact" else "expanded"
+
+    def _fmt_task_line_compact(self, r) -> str:
+        title = self._h((getattr(r, "title", "") or "")[:72])
+        bits = []
+        if getattr(r, "due_date", None):
+            bits.append(self._fmt_due_human(getattr(r, "due_date", None), getattr(r, "due_time", None)))
+        dur = self._fmt_duration(getattr(r, "duration_minutes", None))
+        if dur:
+            bits.append("⏱ " + dur)
+        try:
+            pr = int(getattr(r, "priority", 0) or 0)
+            if pr > 0:
+                bits.append("❗" * min(3, pr))
+        except Exception:
+            pass
+        if bool(getattr(r, "pinned", False)):
+            bits.append("📌")
+        sid = self._h(str(getattr(r, "id", ""))[:8])
+        if bits:
+            return f"• <b>{title}</b> — <i>{self._h(' • '.join(bits))}</i> <code>{sid}</code>"
+        return f"• <b>{title}</b> <code>{sid}</code>"
+
     def _task_line_html(self, r) -> str:
         title = self._h((r.title or "")[:90])
         markers = []
@@ -400,7 +463,7 @@ class TelegramBotBridge:
     def _updates_loop(self):
         while not self._stop.is_set():
             try:
-                resp = self._tg_api("getUpdates", {"timeout": 25, "offset": self._offset, "allowed_updates": ["message"]}, timeout=35)
+                resp = self._tg_api("getUpdates", {"timeout": 25, "offset": self._offset, "allowed_updates": ["message", "callback_query"]}, timeout=35)
                 if not resp.get("ok"):
                     time.sleep(2)
                     continue
@@ -418,20 +481,21 @@ class TelegramBotBridge:
                 time.sleep(3)
 
     def _handle_update(self, upd: dict):
+        if upd.get("callback_query"):
+            return self._handle_callback(upd.get("callback_query") or {})
+
         msg = upd.get("message") or {}
         text = (msg.get("text") or "").strip()
         chat = msg.get("chat") or {}
         chat_id = str(chat.get("id") or "")
         from_u = msg.get("from") or {}
         username = (from_u.get("username") or "").strip() or None
-        first_name = (from_u.get("first_name") or "").strip() or ""
         if not text or not chat_id:
             return
 
         if text.startswith("/"):
             cmd, *rest = text.split(" ", 1)
             arg = rest[0].strip() if rest else ""
-            # Handle /cmd@BotName form
             cmd = cmd.split("@", 1)[0].lower()
             if cmd == "/start":
                 if arg:
@@ -447,6 +511,7 @@ class TelegramBotBridge:
                     "• <code>/today</code> — задачи на сегодня\n"
                     "• <code>/tasks</code> — активные задачи\n"
                     "• <code>/add</code> — быстро добавить задачу\n"
+                    "• <code>/compact</code> / <code>/expanded</code> — вид сообщений\n"
                     "• <code>/help</code> — полный список")
                 return
             if cmd == "/help":
@@ -460,11 +525,14 @@ class TelegramBotBridge:
                     "• <code>/today</code> — на сегодня\n"
                     "• <code>/tasks</code> — активные\n"
                     "• <code>/next7</code> — на 7 дней\n"
-                    "• <code>/inbox</code> — входящие\n\n"
+                    "• <code>/inbox</code> — входящие\n"
+                    "• <code>/compact</code> — компактный режим\n"
+                    "• <code>/expanded</code> — расширенный режим\n\n"
                     "<b>Быстрые действия</b>\n"
                     "• <code>/add текст</code> — добавить задачу\n"
                     "  <i>Пример:</i> <code>/add репетитор завтра 20:30 на 2ч @30m #учеба</code>\n"
-                    "• <code>/done ID_ПРЕФИКС</code> — отметить выполненной")
+                    "• <code>/done ID_ПРЕФИКС</code> — отметить выполненной\n\n"
+                    "💡 В списках есть inline-кнопки: пагинация, фильтры и переключение режима.")
                 return
             if cmd == "/id":
                 self._send_message(chat_id, f"🆔 <b>Ваш Telegram chat_id</b>\n<code>{self._h(chat_id)}</code>")
@@ -473,6 +541,11 @@ class TelegramBotBridge:
                 return self._cmd_link(chat_id, username, arg)
             if cmd == "/unlink":
                 return self._cmd_unlink(chat_id)
+            if cmd in {"/compact", "/expanded"}:
+                self._set_view_mode(chat_id, "compact" if cmd == "/compact" else "expanded")
+                label = "Компактный" if cmd == "/compact" else "Расширенный"
+                self._send_message(chat_id, f"🎛️ <b>Режим сообщений:</b> {label}\nПопробуй <code>/tasks</code> или <code>/today</code>.")
+                return
 
             user = self._user_by_chat(chat_id)
             if not user:
@@ -480,13 +553,13 @@ class TelegramBotBridge:
                 return
 
             if cmd == "/tasks":
-                return self._send_message(chat_id, self._format_tasks(user["id"], mode="tasks"))
+                return self._send_task_list_view(chat_id, user["id"], mode="tasks", page=1)
             if cmd == "/today":
-                return self._send_message(chat_id, self._format_tasks(user["id"], mode="today"))
+                return self._send_task_list_view(chat_id, user["id"], mode="today", page=1)
             if cmd == "/next7":
-                return self._send_message(chat_id, self._format_tasks(user["id"], mode="next7"))
+                return self._send_task_list_view(chat_id, user["id"], mode="next7", page=1)
             if cmd == "/inbox":
-                return self._send_message(chat_id, self._format_tasks(user["id"], mode="inbox"))
+                return self._send_task_list_view(chat_id, user["id"], mode="inbox", page=1)
             if cmd == "/add":
                 title = (arg or "").strip()
                 if not title:
@@ -497,6 +570,73 @@ class TelegramBotBridge:
                 return self._cmd_done(user["id"], chat_id, arg)
 
             self._send_message(chat_id, "🤔 Неизвестная команда. Открой <code>/help</code> для списка команд.")
+
+    def _handle_callback(self, cb: dict):
+        data = (cb.get("data") or "").strip()
+        cbid = str(cb.get("id") or "")
+        msg = cb.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = str(chat.get("id") or "")
+        message_id = int(msg.get("message_id") or 0)
+        if not data or not chat_id or not message_id:
+            if cbid:
+                self._answer_callback(cbid)
+            return
+        if not data.startswith("ct|"):
+            if cbid:
+                self._answer_callback(cbid)
+            return
+
+        user = self._user_by_chat(chat_id)
+        if not user:
+            if cbid:
+                self._answer_callback(cbid, "Сначала привяжи аккаунт через /link", show_alert=True)
+            return
+
+        parts = data.split("|")
+        act = parts[1] if len(parts) > 1 else ""
+        if act == "n" and len(parts) >= 4:
+            mode = parts[2]
+            try:
+                page = max(1, int(parts[3]))
+            except Exception:
+                page = 1
+            if cbid:
+                self._answer_callback(cbid)
+            return self._send_task_list_view(chat_id, user["id"], mode=mode, page=page, edit_message_id=message_id)
+        if act == "v" and len(parts) >= 5:
+            mode_name = "compact" if parts[2] == "c" else "expanded"
+            list_mode = parts[3]
+            try:
+                page = max(1, int(parts[4]))
+            except Exception:
+                page = 1
+            self._set_view_mode(chat_id, mode_name)
+            if cbid:
+                self._answer_callback(cbid, "Режим переключен")
+            return self._send_task_list_view(chat_id, user["id"], mode=list_mode, page=page, edit_message_id=message_id)
+        if act == "d" and len(parts) >= 3:
+            tid = parts[2]
+            ok, text = self._done_by_task_id(user["id"], tid)
+            if cbid:
+                self._answer_callback(cbid, text)
+            # Try to transform the current message into a refreshed list. If it's not a list, fallback to a small confirmation message.
+            if self._edit_message(chat_id, message_id, f"{self._h(text)}\n🆔 <code>{self._h(tid)}</code>"):
+                return
+            return
+        if act == "s" and len(parts) >= 4:
+            tid = parts[2]
+            target = parts[3]
+            if target == "t0":
+                due = date.today().isoformat(); label = "Дата: сегодня"
+            else:
+                due = (date.today() + timedelta(days=1)).isoformat(); label = "Дата: завтра"
+            ok, msg_txt = self._set_task_due_date(user["id"], tid, due)
+            if cbid:
+                self._answer_callback(cbid, label if ok else msg_txt)
+            return
+        if cbid:
+            self._answer_callback(cbid)
 
     def _cmd_link(self, chat_id: str, username: Optional[str], code: str):
         code = (code or "").strip()
@@ -635,7 +775,7 @@ class TelegramBotBridge:
         for icon, txt in details:
             lines.append(f"{icon} {self._h(txt)}")
         lines.append(f"🆔 <code>{self._h(tid)}</code>")
-        self._send_message(chat_id, "\n".join(lines))
+        self._send_message(chat_id, "\n".join(lines), reply_markup=self._kb([[{"text":"✅ Выполнить","callback_data":f"ct|d|{tid}"},{"text":"📅 Сегодня","callback_data":f"ct|s|{tid}|t0"},{"text":"⏭ Завтра","callback_data":f"ct|s|{tid}|t1"}]]))
 
     def _cmd_done(self, user_id: str, chat_id: str, arg: str):
         q = (arg or "").strip()
@@ -685,6 +825,178 @@ class TelegramBotBridge:
                 select(self.lists.c.id).where(and_(self.lists.c.user_id == user_id, self.lists.c.title == "Входящие"))
             ).first()
             return row2[0] if row2 else None
+
+
+    def _done_by_task_id(self, user_id: str, task_id: str) -> tuple[bool, str]:
+        tid = (task_id or "").strip()
+        if not tid:
+            return False, "Нет ID"
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(self.tasks.c.id, self.tasks.c.title, self.tasks.c.completed)
+                .where(and_(self.tasks.c.user_id == user_id, self.tasks.c.id == tid, self.tasks.c.trashed.is_(False)))
+            ).first()
+            if not row:
+                return False, "Задача не найдена"
+            if bool(row.completed):
+                return True, "Уже выполнена"
+            ts = self.now_ts()
+            conn.execute(
+                update(self.tasks)
+                .where(and_(self.tasks.c.user_id == user_id, self.tasks.c.id == tid))
+                .values(completed=True, completed_at=ts, updated_at=ts, tg_reminder_sent_at=None)
+            )
+        return True, "✅ Выполнено"
+
+    def _set_task_due_date(self, user_id: str, task_id: str, due_date: str) -> tuple[bool, str]:
+        tid = (task_id or "").strip()
+        if not tid:
+            return False, "Нет ID"
+        ts = self.now_ts()
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(self.tasks.c.id, self.tasks.c.completed, self.tasks.c.trashed)
+                .where(and_(self.tasks.c.user_id == user_id, self.tasks.c.id == tid))
+            ).first()
+            if not row or bool(row.trashed):
+                return False, "Задача не найдена"
+            if bool(row.completed):
+                return False, "Задача уже выполнена"
+            conn.execute(
+                update(self.tasks)
+                .where(and_(self.tasks.c.user_id == user_id, self.tasks.c.id == tid))
+                .values(due_date=due_date, updated_at=ts)
+            )
+        return True, "Дата обновлена"
+
+    def _send_task_list_view(self, chat_id: str, user_id: str, mode: str = "tasks", page: int = 1, edit_message_id: Optional[int] = None):
+        payload = self._task_list_payload(chat_id, user_id, mode=mode, page=page)
+        if edit_message_id:
+            ok = self._edit_message(chat_id, int(edit_message_id), payload["text"], reply_markup=payload.get("reply_markup"))
+            if ok:
+                return True
+        return self._send_message(chat_id, payload["text"], reply_markup=payload.get("reply_markup"))
+
+    def _task_list_payload(self, chat_id: str, user_id: str, mode: str = "tasks", page: int = 1) -> dict:
+        today = date.today()
+        conds = [self.tasks.c.user_id == user_id, self.tasks.c.completed.is_(False), self.tasks.c.trashed.is_(False)]
+        header = "Активные задачи"; header_icon = "📋"
+        if mode == "today":
+            conds.append(self.tasks.c.due_date == today.isoformat())
+            header = "Сегодня"; header_icon = "📅"
+        elif mode == "tomorrow":
+            conds.append(self.tasks.c.due_date == (today + timedelta(days=1)).isoformat())
+            header = "Завтра"; header_icon = "⏭"
+        elif mode == "next7":
+            conds.append(self.tasks.c.due_date.is_not(None))
+            conds.append(self.tasks.c.due_date >= today.isoformat())
+            conds.append(self.tasks.c.due_date <= (today + timedelta(days=6)).isoformat())
+            header = "Следующие 7 дней"; header_icon = "🗓️"
+        elif mode == "inbox":
+            inbox_id = self._inbox_list_id(user_id)
+            if inbox_id:
+                conds.append(self.tasks.c.list_id == inbox_id)
+            header = "Входящие"; header_icon = "📥"
+
+        pin_first = case((self.tasks.c.pinned.is_(True), 0), else_=1)
+        nulls_date = case((self.tasks.c.due_date.is_(None), 1), else_=0)
+        nulls_time = case((self.tasks.c.due_time.is_(None), 1), else_=0)
+
+        view_mode = self._get_view_mode(chat_id)
+        per_page = 12 if view_mode == "compact" else 6
+        page = max(1, int(page or 1))
+        offset = (page - 1) * per_page
+
+        with self.engine.connect() as conn:
+            total = int(conn.execute(select(self.tasks.c.id).where(and_(*conds))).fetchall().__len__())
+            rows = conn.execute(
+                select(
+                    self.tasks.c.id,
+                    self.tasks.c.title,
+                    self.tasks.c.due_date,
+                    self.tasks.c.due_time,
+                    self.tasks.c.priority,
+                    self.tasks.c.pinned,
+                    self.tasks.c.duration_minutes,
+                )
+                .where(and_(*conds))
+                .order_by(pin_first.asc(), nulls_date.asc(), self.tasks.c.due_date.asc(), nulls_time.asc(), self.tasks.c.due_time.asc(), self.tasks.c.created_at.desc())
+                .limit(per_page)
+                .offset(offset)
+            ).all()
+
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        if page > total_pages:
+            page = total_pages
+            offset = (page - 1) * per_page
+            with self.engine.connect() as conn:
+                rows = conn.execute(
+                    select(
+                        self.tasks.c.id,
+                        self.tasks.c.title,
+                        self.tasks.c.due_date,
+                        self.tasks.c.due_time,
+                        self.tasks.c.priority,
+                        self.tasks.c.pinned,
+                        self.tasks.c.duration_minutes,
+                    )
+                    .where(and_(*conds))
+                    .order_by(pin_first.asc(), nulls_date.asc(), self.tasks.c.due_date.asc(), nulls_time.asc(), self.tasks.c.due_time.asc(), self.tasks.c.created_at.desc())
+                    .limit(per_page)
+                    .offset(offset)
+                ).all()
+
+        if not rows:
+            text = f"{header_icon} <b>{self._h(header)}</b>\n\nПока пусто ✨"
+            kb = self._list_keyboard(mode, 1, 1, 0, view_mode, [])
+            return {"text": text, "reply_markup": kb}
+
+        lines = [f"{header_icon} <b>{self._h(header)}</b> <i>({total})</i>", f"<i>Режим:</i> {'Компактный' if view_mode == 'compact' else 'Расширенный'} • <i>Стр.</i> {page}/{total_pages}", ""]
+        for idx, r in enumerate(rows, start=1+offset):
+            if view_mode == "compact":
+                lines.append(self._fmt_task_line_compact(r))
+            else:
+                lines.append(f"<b>{idx}.</b> " + self._task_line_html(r).lstrip('• '))
+                lines.append("")
+        if view_mode == "compact":
+            lines.append("")
+        lines.append("💡 <i>Можно нажать кнопки ниже или использовать</i> <code>/done ID_ПРЕФИКС</code>")
+
+        kb = self._list_keyboard(mode, page, total_pages, total, view_mode, rows)
+        return {"text": "\n".join(lines).strip(), "reply_markup": kb}
+
+    def _list_keyboard(self, mode: str, page: int, total_pages: int, total: int, view_mode: str, rows) -> dict:
+        rows_kb: list[list[dict]] = []
+        rows_kb.append([
+            {"text": "📅 Сегодня", "callback_data": "ct|n|today|1"},
+            {"text": "⏭ Завтра", "callback_data": "ct|n|tomorrow|1"},
+            {"text": "📋 Все", "callback_data": "ct|n|tasks|1"},
+        ])
+        nav_row = []
+        if page > 1:
+            nav_row.append({"text": "◀️", "callback_data": f"ct|n|{mode}|{page-1}"})
+        nav_row.append({"text": f"{page}/{total_pages}", "callback_data": f"ct|n|{mode}|{page}"})
+        if page < total_pages:
+            nav_row.append({"text": "▶️", "callback_data": f"ct|n|{mode}|{page+1}"})
+        rows_kb.append(nav_row)
+        toggle_code = "e" if view_mode == "compact" else "c"
+        toggle_text = "🧾 Расширенный" if view_mode == "compact" else "🧩 Компактный"
+        rows_kb.append([
+            {"text": toggle_text, "callback_data": f"ct|v|{toggle_code}|{mode}|{page}"},
+            {"text": "🗓️ 7 дней", "callback_data": "ct|n|next7|1"},
+            {"text": "📥 Inbox", "callback_data": "ct|n|inbox|1"},
+        ])
+        if view_mode == "expanded" and rows:
+            for r in rows[:4]:
+                rid = str(getattr(r, "id", ""))
+                if not rid:
+                    continue
+                rows_kb.append([
+                    {"text": "✅ Выполнить", "callback_data": f"ct|d|{rid}"},
+                    {"text": "📅 Сегодня", "callback_data": f"ct|s|{rid}|t0"},
+                    {"text": "⏭ Завтра", "callback_data": f"ct|s|{rid}|t1"},
+                ])
+        return self._kb(rows_kb)
 
 
     def _format_tasks(self, user_id: str, mode: str = "tasks") -> str:
@@ -823,7 +1135,7 @@ class TelegramBotBridge:
                 f"🆔 <code>{self._h(r['id'])}</code>\n\n"
                 "✅ <i>Завершить:</i> <code>/done ID_ПРЕФИКС</code>"
             )
-            self._send_message(str(r["telegram_chat_id"]), txt)
+            self._send_message(str(r["telegram_chat_id"]), txt, reply_markup=self._kb([[{"text":"✅ Выполнить","callback_data":f"ct|d|{r['id']}"},{"text":"📅 Сегодня","callback_data":f"ct|s|{r['id']}|t0"},{"text":"⏭ Завтра","callback_data":f"ct|s|{r['id']}|t1"}]]))
 
     def _task_due_ts(self, due_date: Optional[str], due_time: Optional[str]) -> Optional[int]:
         if not due_date:
